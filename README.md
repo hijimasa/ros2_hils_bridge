@@ -1,88 +1,90 @@
+**English** | [日本語](README-ja.md)
+
 # ros2_hils_bridge
 
-ROS 2 Hardware-in-the-Loop Simulation (HILS) ブリッジパッケージ群。
+ROS 2 Hardware-in-the-Loop Simulation (HILS) bridge packages.
 
-シミュレータ（Gazebo / Unity / Isaac Sim）の ROS トピックを実機センサのプロトコルに変換し、**実機のドライバノードを物理通信経路を含めてテスト**するための HILS 環境を安価に構築する。
+Converts ROS topics from simulators (Gazebo / Unity / Isaac Sim) into device-native protocols, enabling **end-to-end testing of real sensor drivers over physical communication paths** -- affordably.
 
-## コンセプト
+## Concept
 
-ソフトウェアシミュレーション (SILS) では ROS トピックに直接パブリッシュするため、実機のセンサドライバや物理通信経路（UDP, UART, USB, I2C 等）がテストされない。本パッケージ群は、シミュレータの出力をセンサ固有のプロトコルに変換し、実機ドライバが「本物のセンサが接続されている」と認識する状態を作り出す。
+Software-in-the-Loop (SILS) publishes directly to ROS topics, so the actual sensor drivers and physical interfaces (UDP, UART, USB, I2C, etc.) are never exercised. These packages bridge that gap: the real-hardware driver sees exactly what it would see from a real sensor.
 
 ```
-シミュレーションPC                                    実機PC (Robot)
+Simulation PC                                    Robot PC
 ┌─────────────┐     ┌──────────────────┐
 │  Simulator   │────>│ hils_bridge_*    │
-│  (PointCloud2│     │                  │──USB-LAN──> LiDARドライバ
-│   Image      │     │  プロトコル変換    │──FT234X──> GPS/IMUドライバ
-│   NavSatFix  │     │                  │──RP2040──> USBカメラドライバ
+│  (PointCloud2│     │                  │──USB-LAN──> LiDAR driver
+│   Image      │     │  Protocol conv.  │──FT234X──> GPS/IMU driver
+│   NavSatFix  │     │                  │──RP2040──> USB camera driver
 │   JointState)│     └──────────────────┘
 └─────────────┘
 ```
 
-## パッケージ一覧
+## Packages
 
-### 共通基盤
+### Core
 
-| パッケージ | 説明 | 状態 |
-|-----------|------|------|
-| `hils_bridge_base` | 共通ユーティリティ（フレームプロトコル、ネットワーク、基底クラス） | 実装済 |
-| `hils_bringup` | 起動ファイルの統合 | スタブ |
+| Package | Description | Status |
+|---------|-------------|--------|
+| `hils_bridge_base` | Shared utilities (frame protocol, network, base classes) | Done |
+| `hils_bringup` | Launch orchestration | Stub |
 
-### LiDAR（USB-LAN アダプタ + 純ソフトウェア、マイコン不要）
+### LiDAR (USB-Ethernet adapter + pure software, no MCU needed)
 
-| パッケージ | 対象デバイス | 実機ドライバ | 状態 |
-|-----------|------------|------------|------|
-| `hils_bridge_lidar_livox` | Livox Mid-360 | livox_ros_driver2 | 実装済・動作確認済 |
-| `hils_bridge_lidar_velodyne` | Velodyne VLP-16 | velodyne_driver | 実装済・未検証 |
-| `hils_bridge_lidar_ouster` | Ouster OS1 | ouster_ros | 実装済・未検証 |
+| Package | Target Device | Real Driver | Status |
+|---------|--------------|-------------|--------|
+| `hils_bridge_lidar_livox` | Livox Mid-360 | livox_ros_driver2 | Done, **verified** |
+| `hils_bridge_lidar_velodyne` | Velodyne VLP-16 | velodyne_driver | Done, unverified |
+| `hils_bridge_lidar_ouster` | Ouster OS1 | ouster_ros | Done, unverified |
 
-### カメラ（RP2040 x 2）
+### Camera (RP2040 x 2)
 
-| パッケージ | 対象デバイス | 実機ドライバ | 状態 |
-|-----------|------------|------------|------|
-| `hils_bridge_camera_uvc` | USB カメラ (UVC/MJPEG) | usb_cam / cv_camera | 実装済・動作確認済 |
+| Package | Target Device | Real Driver | Status |
+|---------|--------------|-------------|--------|
+| `hils_bridge_camera_uvc` | USB Camera (UVC/MJPEG) | usb_cam / cv_camera | Done, **verified** |
 
-### シリアルセンサ（FT234X x 2 クロス接続、マイコン不要）
+### Serial Sensors (FT234X x 2 cross-connection, no MCU needed)
 
-| パッケージ | 対象デバイス | 実機ドライバ | 状態 |
-|-----------|------------|------------|------|
-| `hils_bridge_serial_gps` | GPS (NMEA 0183) | nmea_navsat_driver | 実装済・未検証 |
-| `hils_bridge_serial_imu` | IMU (Witmotion WT901) | witmotion_ros | 実装済・未検証 |
+| Package | Target Device | Real Driver | Status |
+|---------|--------------|-------------|--------|
+| `hils_bridge_serial_gps` | GPS (NMEA 0183) | nmea_navsat_driver | Done, unverified |
+| `hils_bridge_serial_imu` | IMU (Witmotion WT901) | witmotion_ros | Done, unverified |
 
-### アクチュエータ（RP2040 PIO）
+### Actuators (RP2040 PIO)
 
-| パッケージ | 対象デバイス | 出力 | 状態 |
-|-----------|------------|------|------|
-| `hils_bridge_actuator_pwm` | RC サーボ + エンコーダ | PWM (50Hz) + A/B 相 | 実装済・未検証 |
+| Package | Target Device | Output | Status |
+|---------|--------------|--------|--------|
+| `hils_bridge_actuator_pwm` | RC Servo + Encoder | PWM (50Hz) + A/B quadrature | Done, unverified |
 
-### I2C/SPI センサ（RP2040 I2C スレーブ）
+### I2C/SPI Sensors (RP2040 I2C slave)
 
-| パッケージ | 対象デバイス | インターフェース | 状態 |
-|-----------|------------|----------------|------|
-| `hils_bridge_sensor_i2c` | MPU-6050 IMU | I2C スレーブ (0x68) | 実装済・未検証 |
+| Package | Target Device | Interface | Status |
+|---------|--------------|-----------|--------|
+| `hils_bridge_sensor_i2c` | MPU-6050 IMU | I2C slave (0x68) | Done, unverified |
 
-### 将来の拡張（プレースホルダ）
+### Future Expansion (placeholders)
 
-| ディレクトリ | 想定デバイス |
-|------------|------------|
-| `hils_bridge_can` | CAN バスモータドライバ (CANopen) |
-| `hils_bridge_encoder` | ロータリエンコーダ |
-| `hils_bridge_gps` | GPS 受信機（メーカー別パッケージ） |
-| `hils_bridge_imu` | IMU（メーカー別パッケージ） |
+| Directory | Planned Devices |
+|-----------|----------------|
+| `hils_bridge_can` | CAN bus motor drivers (CANopen) |
+| `hils_bridge_encoder` | Rotary encoders |
+| `hils_bridge_gps` | GPS receivers (vendor-specific) |
+| `hils_bridge_imu` | IMUs (vendor-specific) |
 
-## 必要ハードウェア
+## Required Hardware
 
-| 用途 | ハードウェア | 概算コスト | 備考 |
-|------|------------|----------|------|
-| LiDAR エミュレーション | USB-LAN アダプタ | ~1,000 円/台 | マイコン不要 |
-| シリアルセンサ | FT234X x 2 (秋月 108461) | ~800 円/組 | TX/RX クロス接続 |
-| UVC カメラ | Raspberry Pi Pico H x 2 | ~1,840 円 | 要ファームウェア |
-| PWM サーボ / エンコーダ | Raspberry Pi Pico H x 1 | ~920 円 | 要ファームウェア |
-| I2C センサ | Raspberry Pi Pico H x 1 | ~920 円 | 要ファームウェア |
+| Purpose | Hardware | Approx. Cost | Notes |
+|---------|----------|-------------|-------|
+| LiDAR emulation | USB-Ethernet adapter | ~$7 / unit | No MCU needed |
+| Serial sensors | FT234X x 2 (Akizuki 108461) | ~$6 / pair | TX/RX cross-connection |
+| UVC camera | Raspberry Pi Pico H x 2 | ~$13 | Firmware required |
+| PWM servo / encoder | Raspberry Pi Pico H x 1 | ~$7 | Firmware required |
+| I2C sensor | Raspberry Pi Pico H x 1 | ~$7 | Firmware required |
 
-最小構成（LiDAR + カメラ）は約 3,000 円で構築可能。
+Minimum setup (LiDAR + camera) costs around $20.
 
-## ビルド
+## Build
 
 ```bash
 cd ~/colcon_ws/src
@@ -93,32 +95,32 @@ colcon build
 source install/setup.bash
 ```
 
-### 依存パッケージ
+### Dependencies
 
-- ROS 2 Humble
+- ROS 2 Humble / Jazzy
 - `sensor_msgs`, `geometry_msgs`, `cv_bridge`
 - `python3-serial`, `python3-opencv`, `python3-numpy`
 
-## 使い方（例: Livox Mid-360）
+## Usage (example: Livox Mid-360)
 
 ```bash
-# シミュレーションPC: USB-LANアダプタにLiDAR IPを割当
+# Simulation PC: assign LiDAR IP to a USB-Ethernet adapter
 sudo ip addr add 192.168.1.12/24 dev eth1
 
-# エミュレータ起動
+# Launch emulator
 ros2 launch hils_bridge_lidar_livox livox_emulator.launch.py \
   network_interface:=eth1 \
   host_ip:=192.168.1.5 \
   pointcloud_topic:=/livox/lidar
 
-# 実機PC: livox_ros_driver2 を通常通り起動
-# シミュレータの点群が実機ドライバ経由で配信される
+# Robot PC: launch livox_ros_driver2 as usual
+# Simulated point clouds are delivered through the real driver
 ```
 
-## ファームウェア
+## Firmware
 
-UVC カメラ・PWM サーボ・I2C センサのエミュレーションには RP2040 ファームウェアが必要。ファームウェアは親リポジトリ [ros_hardware_in_the_loop_system](https://github.com/<your-org>/ros_hardware_in_the_loop_system) の `firmware/` ディレクトリで管理している。
+UVC camera, PWM servo, and I2C sensor emulation require RP2040 firmware. Firmware is managed in the parent repository [ros_hardware_in_the_loop_system](https://github.com/<your-org>/ros_hardware_in_the_loop_system) under `firmware/`.
 
-## ライセンス
+## License
 
 MIT
