@@ -5,7 +5,7 @@
   <version>0.1.0</version>
   <description>HILS bridge: ROS image topic to RP2040 UVC camera via USB CDC + SPI</description>
   <maintainer email="todo@todo.com">TODO</maintainer>
-  <license>Apache-2.0</license>
+  <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>ament_cmake_python</buildtool_depend>

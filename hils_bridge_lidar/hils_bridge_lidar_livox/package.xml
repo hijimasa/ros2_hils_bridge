@@ -5,7 +5,7 @@
   <version>0.1.0</version>
   <description>HILS Livox Mid360 emulator: PointCloud2/IMU to Livox SDK2 UDP (pure software, no custom hardware)</description>
   <maintainer email="todo@todo.com">TODO</maintainer>
-  <license>Apache-2.0</license>
+  <license>MIT</license>
 
   <!-- Build tools -->
   <buildtool_depend>ament_cmake</buildtool_depend>
