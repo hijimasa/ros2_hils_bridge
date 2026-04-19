@@ -6,10 +6,11 @@ Subscribes to a ROS sensor_msgs/Imu topic from a simulator and writes
 Witmotion WT901-compatible binary packets to a serial port (FT234X
 USB-serial adapter with cross-connection to the robot PC).
 
-Each IMU message produces three 11-byte packets (33 bytes total):
+Each IMU message produces four 11-byte packets (44 bytes total):
   0x51 - Acceleration
   0x52 - Angular Velocity
   0x53 - Angle (Euler)
+  0x59 - Orientation (Quaternion)
 
 Data flow:
     Simulation (Imu) -> this node -> WT901 binary serial -> FT234X -> Robot PC
@@ -28,6 +29,7 @@ _HEADER = 0x55
 _TYPE_ACCEL = 0x51
 _TYPE_GYRO = 0x52
 _TYPE_ANGLE = 0x53
+_TYPE_QUATERNION = 0x59
 
 # Conversion constants
 _GRAVITY = 9.8
@@ -172,8 +174,18 @@ class ImuBridgeNode(SerialBridgeBase):
         yaw_raw = _clamp_int16(int(yaw / 180.0 * 32768.0))
         pkt_angle = _build_packet(_TYPE_ANGLE, roll_raw, pitch_raw, yaw_raw, 0x0000)
 
-        # Write all three packets as one block (33 bytes)
-        self.serial_write(pkt_accel + pkt_gyro + pkt_angle)
+        # --- 0x59 Orientation (Quaternion) ---
+        # Physical value = raw / 32768 (unit quaternion components in [-1, 1])
+        # => raw = value * 32768
+        # Element order in the packet: x, y, z, w (matches ROS convention)
+        qx_raw = _clamp_int16(int(msg.orientation.x * 32768.0))
+        qy_raw = _clamp_int16(int(msg.orientation.y * 32768.0))
+        qz_raw = _clamp_int16(int(msg.orientation.z * 32768.0))
+        qw_raw = _clamp_int16(int(msg.orientation.w * 32768.0))
+        pkt_quat = _build_packet(_TYPE_QUATERNION, qx_raw, qy_raw, qz_raw, qw_raw)
+
+        # Write all four packets as one block (44 bytes)
+        self.serial_write(pkt_accel + pkt_gyro + pkt_angle + pkt_quat)
 
 
 def main(args=None):
