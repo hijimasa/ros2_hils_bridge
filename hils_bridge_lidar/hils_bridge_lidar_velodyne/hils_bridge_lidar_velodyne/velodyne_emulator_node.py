@@ -39,7 +39,13 @@ from hils_bridge_base.udp_emulator_base import UdpEmulatorBase
 VLP16_DATA_PORT = 2368
 VLP16_POSITION_PORT = 8308
 
-VLP16_BLOCK_FLAG = 0xFFEE
+# CAUTION: velodyne_pointcloud silently drops every block whose header
+# doesn't match UPPER_BANK (= 0xeeff as a little-endian uint16 = bytes
+# 0xFF 0xEE on the wire). The spec says "flag 0xFFEE" which is misleading;
+# on the wire the bytes are 0xFF first, 0xEE second. Using 0xFFEE here
+# would produce reversed bytes and cause ALL points to disappear from
+# /velodyne_points without any warning.
+VLP16_BLOCK_FLAG = 0xEEFF
 VLP16_PRODUCT_ID = 0x22
 
 # Return modes
@@ -51,7 +57,7 @@ RETURN_DUAL = 0x39
 VLP16_BLOCK_SIZE = 100        # 2 flag + 2 azimuth + 96 channel data
 VLP16_BLOCKS_PER_PACKET = 12
 VLP16_DATA_BLOCK_TOTAL = VLP16_BLOCK_SIZE * VLP16_BLOCKS_PER_PACKET  # 1200
-VLP16_PACKET_SIZE = 1248      # 1200 data + 4 timestamp + 2 factory
+VLP16_PACKET_SIZE = 1206      # 1200 data blocks + 4 timestamp + 2 factory (UDP payload size)
 
 # Each block has 32 channels (2 firing sequences x 16 lasers), 3 bytes each
 VLP16_CHANNELS_PER_BLOCK = 32
@@ -120,6 +126,9 @@ class VelodyneEmulatorNode(UdpEmulatorBase):
         self.declare_parameter('downsample_mode', 'uniform',
             ParameterDescriptor(
                 description='Downsample mode: "uniform" or "near"'))
+        self.declare_parameter('elevation_filter', True,
+            ParameterDescriptor(
+                description='Drop points outside VLP-16 vertical FOV (-15 to +15 deg)'))
 
         self.add_on_set_parameters_callback(self._on_velodyne_param_change)
 
@@ -279,6 +288,21 @@ class VelodyneEmulatorNode(UdpEmulatorBase):
 
         # Elevation: atan2(z, xy_dist), convert to degrees
         elevation_deg = np.degrees(np.arctan2(z, xy_dist))
+
+        # Filter points outside VLP-16 vertical FOV (-15 to +15 deg)
+        # Otherwise, points beyond FOV collapse onto the edge channels (ch0/ch15)
+        # and velodyne_pointcloud may reject the packets as inconsistent.
+        if self.get_parameter('elevation_filter').value:
+            mask = (elevation_deg >= -15.5) & (elevation_deg <= 15.5)
+            x = x[mask]
+            y = y[mask]
+            z = z[mask]
+            refl = refl[mask]
+            distance = distance[mask]
+            azimuth_deg = azimuth_deg[mask]
+            elevation_deg = elevation_deg[mask]
+            if len(x) == 0:
+                return []
 
         # Map each point to nearest VLP-16 channel
         elev_arr = np.array(CHANNEL_ELEVATIONS, dtype=np.float64)

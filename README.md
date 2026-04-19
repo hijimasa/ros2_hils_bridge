@@ -35,7 +35,7 @@ Simulation PC                                    Robot PC
 | Package | Target Device | Real Driver | Status |
 |---------|--------------|-------------|--------|
 | `hils_bridge_lidar_livox` | Livox Mid-360 | livox_ros_driver2 | Done, **verified** |
-| `hils_bridge_lidar_velodyne` | Velodyne VLP-16 | velodyne_driver | Done, unverified |
+| `hils_bridge_lidar_velodyne` | Velodyne VLP-16 | velodyne_driver | Done, **verified** |
 | `hils_bridge_lidar_ouster` | Ouster OS1 | ouster_ros | Done, unverified |
 
 ### Camera (RP2040 x 2)

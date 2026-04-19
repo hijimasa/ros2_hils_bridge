@@ -35,7 +35,7 @@ ROS 2 Hardware-in-the-Loop Simulation (HILS) ブリッジパッケージ群。
 | パッケージ | 対象デバイス | 実機ドライバ | 状態 |
 |-----------|------------|------------|------|
 | `hils_bridge_lidar_livox` | Livox Mid-360 | livox_ros_driver2 | 実装済・動作確認済 |
-| `hils_bridge_lidar_velodyne` | Velodyne VLP-16 | velodyne_driver | 実装済・未検証 |
+| `hils_bridge_lidar_velodyne` | Velodyne VLP-16 | velodyne_driver | 実装済・**動作確認済** |
 | `hils_bridge_lidar_ouster` | Ouster OS1 | ouster_ros | 実装済・未検証 |
 
 ### カメラ（RP2040 x 2）
