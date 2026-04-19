@@ -36,7 +36,9 @@ Simulation PC                                    Robot PC
 |---------|--------------|-------------|--------|
 | `hils_bridge_lidar_livox` | Livox Mid-360 | livox_ros_driver2 | Done, **verified** |
 | `hils_bridge_lidar_velodyne` | Velodyne VLP-16 | velodyne_driver | Done, **verified** |
-| `hils_bridge_lidar_ouster` | Ouster OS1 | ouster_ros | Done, unverified |
+| `hils_bridge_lidar_ouster` | Ouster OS1 | ouster_ros | Done, **verified**[^ouster-note] |
+
+[^ouster-note]: For Ouster, the emulator exposes HTTP REST API on port 80, so Docker needs `sysctls: net.ipv4.ip_unprivileged_port_start=80`. See the [verification guide](../docs/hils_verification_guide.md#13-ouster-os1) for details.
 
 ### Camera (RP2040 x 2)
 

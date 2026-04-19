@@ -5,7 +5,7 @@
     imu_topic: "/ouster/imu"
     enable_imu: true
 
-    # Max point cloud publish rate (Hz) - OS1 runs at 10/20 Hz, default 10 Hz
+    # Max point cloud publish rate (Hz) - OS1 runs at 10 or 20 Hz, default 10
     max_hz: 10.0
 
     # Max points per frame
@@ -15,16 +15,24 @@
     # Downsample mode: "uniform" (even spacing) or "near" (closest points first)
     downsample_mode: "uniform"
 
-    # Lidar mode: columns per frame (512, 1024, or 2048)
-    lidar_mode: 512
+    # Lidar mode string (required format for ouster_ros): 512x10, 1024x10, 2048x10
+    lidar_mode: "512x10"
 
     # Number of vertical channels (16, 32, or 64)
     n_channels: 16
 
+    # Emulated LiDAR serial number (reported via TCP 7501)
+    serial_number: "992008000101"
+
+    # Filter incoming points by the emulated sensor's vertical FOV.
+    # When the simulator produces points outside the FOV, enabling this
+    # yields cleaner packets.
+    elevation_filter: true
+
     # Network config
     # device_ip: IP assigned to the network interface acting as the emulated OS1
     # host_ip: Robot PC IP where ouster_driver runs
-    # network_interface: Network interface to bind (e.g. "eth1"). Empty = auto from device_ip.
+    # network_interface: Network interface to bind (e.g. "eth1"). Empty = auto.
     device_ip: "192.168.1.100"
     host_ip: "192.168.1.5"
     network_interface: ""

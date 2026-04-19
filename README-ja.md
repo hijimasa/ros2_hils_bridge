@@ -36,7 +36,9 @@ ROS 2 Hardware-in-the-Loop Simulation (HILS) ブリッジパッケージ群。
 |-----------|------------|------------|------|
 | `hils_bridge_lidar_livox` | Livox Mid-360 | livox_ros_driver2 | 実装済・動作確認済 |
 | `hils_bridge_lidar_velodyne` | Velodyne VLP-16 | velodyne_driver | 実装済・**動作確認済** |
-| `hils_bridge_lidar_ouster` | Ouster OS1 | ouster_ros | 実装済・未検証 |
+| `hils_bridge_lidar_ouster` | Ouster OS1 | ouster_ros | 実装済・**動作確認済**（注意点あり[^ouster-note]） |
+
+[^ouster-note]: Ouster はエミュレータ側で HTTP REST API (port 80) を提供するため Docker では `sysctls: net.ipv4.ip_unprivileged_port_start=80` が必要。詳細は [動作確認手順書](../docs/hils_verification_guide.md#13-ouster-os1) を参照。
 
 ### カメラ（RP2040 x 2）
 

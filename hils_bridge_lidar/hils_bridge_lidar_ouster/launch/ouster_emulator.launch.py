@@ -4,6 +4,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -20,10 +21,14 @@ def generate_launch_description():
                               description='Max points per frame'),
         DeclareLaunchArgument('downsample_mode', default_value='uniform',
                               description='Downsample: "uniform" or "near"'),
-        DeclareLaunchArgument('lidar_mode', default_value='512',
-                              description='Columns per frame (512, 1024, 2048)'),
+        DeclareLaunchArgument('lidar_mode', default_value='512x10',
+                              description='Lidar mode string: 512x10, 1024x10, 2048x10'),
         DeclareLaunchArgument('n_channels', default_value='16',
                               description='Number of vertical channels (16, 32, 64)'),
+        DeclareLaunchArgument('serial_number', default_value='992008000101',
+                              description='Emulated LiDAR serial number'),
+        DeclareLaunchArgument('elevation_filter', default_value='true',
+                              description='Drop points outside sensor vertical FOV'),
         DeclareLaunchArgument('device_ip', default_value='192.168.1.100',
                               description='IP assigned to the network interface (emulated OS1)'),
         DeclareLaunchArgument('host_ip', default_value='192.168.1.5',
@@ -42,8 +47,12 @@ def generate_launch_description():
                 'max_hz': LaunchConfiguration('max_hz'),
                 'max_points_per_frame': LaunchConfiguration('max_points_per_frame'),
                 'downsample_mode': LaunchConfiguration('downsample_mode'),
-                'lidar_mode': LaunchConfiguration('lidar_mode'),
+                'lidar_mode': ParameterValue(
+                    LaunchConfiguration('lidar_mode'), value_type=str),
                 'n_channels': LaunchConfiguration('n_channels'),
+                'serial_number': ParameterValue(
+                    LaunchConfiguration('serial_number'), value_type=str),
+                'elevation_filter': LaunchConfiguration('elevation_filter'),
                 'device_ip': LaunchConfiguration('device_ip'),
                 'host_ip': LaunchConfiguration('host_ip'),
                 'network_interface': LaunchConfiguration('network_interface'),
