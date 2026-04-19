@@ -21,6 +21,21 @@ Simulation PC                                    Robot PC
 └─────────────┘
 ```
 
+## Naming Convention
+
+Packages follow a **two-level naming pattern**:
+
+```
+hils_bridge_<sensor_type>/hils_bridge_<sensor_type>_<protocol_or_vendor_series>/
+```
+
+- **`<sensor_type>`** — physical/functional category: `lidar`, `camera`, `gps`, `imu`, `actuator`, `encoder`, `can`
+- **`<protocol_or_vendor_series>`** — chosen by the following rule:
+  - **Industry-standard protocol** (UVC, NMEA0183, PWM, quadrature, …): use the protocol name itself, signaling that any vendor's device with that protocol works (e.g. `hils_bridge_camera_uvc`, `hils_bridge_gps_nmea0183`)
+  - **Vendor-specific protocol**: use `<vendor>_<series>` so the actual scope is unambiguous (e.g. `hils_bridge_lidar_livox_mid360`, `hils_bridge_imu_witmotion_wt901`). Even within one vendor, different generations or series often break wire-compatibility — always include the series
+
+The same convention applies to the matching firmware under `firmware/rp2040_<sensor_type>_<protocol_or_vendor_series>/`.
+
 ## Packages
 
 ### Core
@@ -34,9 +49,9 @@ Simulation PC                                    Robot PC
 
 | Package | Target Device | Real Driver | Status |
 |---------|--------------|-------------|--------|
-| `hils_bridge_lidar_livox` | Livox Mid-360 | livox_ros_driver2 | Done, **verified** |
-| `hils_bridge_lidar_velodyne` | Velodyne VLP-16 | velodyne_driver | Done, **verified** |
-| `hils_bridge_lidar_ouster` | Ouster OS1 | ouster_ros | Done, **verified**[^ouster-note] |
+| `hils_bridge_lidar_livox_mid360` | Livox Mid-360 | livox_ros_driver2 | Done, **verified** |
+| `hils_bridge_lidar_velodyne_vlp16` | Velodyne VLP-16 | velodyne_driver | Done, **verified** |
+| `hils_bridge_lidar_ouster_os1` | Ouster OS1 | ouster_ros | Done, **verified**[^ouster-note] |
 
 [^ouster-note]: For Ouster, the emulator exposes HTTP REST API on port 80, so Docker needs `sysctls: net.ipv4.ip_unprivileged_port_start=80`. See the [verification guide](../docs/hils_verification_guide.md#13-ouster-os1) for details.
 
@@ -44,44 +59,48 @@ Simulation PC                                    Robot PC
 
 | Package | Target Device | Real Driver | Status |
 |---------|--------------|-------------|--------|
-| `hils_bridge_camera_uvc` | USB Camera (UVC/MJPEG) | usb_cam / cv_camera | Done, **verified** |
+| `hils_bridge_camera_uvc` | Any UVC USB camera (MJPEG) | usb_cam / cv_camera | Done, **verified** |
 
-### Serial Sensors (FT234X x 2 cross-connection, no MCU needed)
+### GPS (FT234X cross-connection, no MCU needed)
 
 | Package | Target Device | Real Driver | Status |
 |---------|--------------|-------------|--------|
-| `hils_bridge_serial_gps` | GPS (NMEA 0183) | nmea_navsat_driver | Done, unverified |
-| `hils_bridge_serial_imu` | IMU (Witmotion WT901) | witmotion_ros | Done, unverified |
+| `hils_bridge_gps_nmea0183` | Any NMEA 0183 GPS receiver | nmea_navsat_driver | Done, **verified** |
 
-### Actuators (RP2040 PIO)
+### IMU
 
-| Package | Target Device | Output | Status |
-|---------|--------------|--------|--------|
-| `hils_bridge_actuator_pwm` | RC Servo + Encoder | PWM (50Hz) + A/B quadrature | Done, unverified |
+| Package | Target Device | Real Driver | Interface | Status |
+|---------|--------------|-------------|-----------|--------|
+| `hils_bridge_imu_witmotion_wt901` | Witmotion WT901 (binary) | witmotion_ros (ElettraSciComp) | Serial (FT234X) | Done, **verified** |
+| `hils_bridge_imu_invensense_mpu6050` | InvenSense MPU-6050 (register map) | (any I2C master) | I2C slave (RP2040) | Done, unverified |
 
-### I2C/SPI Sensors (RP2040 I2C slave)
+### Actuator
 
-| Package | Target Device | Interface | Status |
-|---------|--------------|-----------|--------|
-| `hils_bridge_sensor_i2c` | MPU-6050 IMU | I2C slave (0x68) | Done, unverified |
+| Package | Target Device | Output | Firmware | Status |
+|---------|--------------|--------|----------|--------|
+| `hils_bridge_actuator_servo_pwm` | RC servo (any vendor) | PWM 50Hz, 500–2500us pulse | rp2040_actuator_servo_pwm | Done, unverified |
+
+### Encoder
+
+| Package | Output Signal | Firmware | Status |
+|---------|---------------|----------|--------|
+| `hils_bridge_encoder_quadrature` | A/B quadrature pulses | rp2040_encoder_quadrature | Done, unverified |
 
 ### Future Expansion (placeholders)
 
 | Directory | Planned Devices |
 |-----------|----------------|
-| `hils_bridge_can` | CAN bus motor drivers (CANopen) |
-| `hils_bridge_encoder` | Rotary encoders |
-| `hils_bridge_gps` | GPS receivers (vendor-specific) |
-| `hils_bridge_imu` | IMUs (vendor-specific) |
+| `hils_bridge_can` | CAN bus motor drivers (CANopen, vendor-specific) |
 
 ## Required Hardware
 
 | Purpose | Hardware | Approx. Cost | Notes |
 |---------|----------|-------------|-------|
 | LiDAR emulation | USB-Ethernet adapter | ~$7 / unit | No MCU needed |
-| Serial sensors | FT234X x 2 (Akizuki 108461) | ~$6 / pair | TX/RX cross-connection |
+| Serial sensors (GPS, IMU) | FT234X x 2 (Akizuki 108461) | ~$6 / pair | TX/RX cross-connection |
 | UVC camera | Raspberry Pi Pico H x 2 | ~$13 | Firmware required |
-| PWM servo / encoder | Raspberry Pi Pico H x 1 | ~$7 | Firmware required |
+| RC servo PWM | Raspberry Pi Pico H x 1 | ~$7 | Firmware required |
+| Quadrature encoder | Raspberry Pi Pico H x 1 | ~$7 | Firmware required |
 | I2C sensor | Raspberry Pi Pico H x 1 | ~$7 | Firmware required |
 
 Minimum setup (LiDAR + camera) costs around $20.
@@ -110,7 +129,7 @@ source install/setup.bash
 sudo ip addr add 192.168.1.12/24 dev eth1
 
 # Launch emulator
-ros2 launch hils_bridge_lidar_livox livox_emulator.launch.py \
+ros2 launch hils_bridge_lidar_livox_mid360 livox_emulator.launch.py \
   network_interface:=eth1 \
   host_ip:=192.168.1.5 \
   pointcloud_topic:=/livox/lidar
