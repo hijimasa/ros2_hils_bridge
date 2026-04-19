@@ -1,4 +1,4 @@
-"""Launch file for PWM servo + encoder bridge node."""
+"""Launch file for the PWM servo capture bridge node."""
 
 import os
 
@@ -18,30 +18,32 @@ def generate_launch_description():
                               description='Serial port for RP2040 USB CDC'),
         DeclareLaunchArgument('baudrate', default_value='115200',
                               description='Serial baudrate'),
-        DeclareLaunchArgument('max_hz', default_value='50.0',
-                              description='Maximum servo update rate'),
-        DeclareLaunchArgument('joint_state_topic', default_value='/joint_states',
-                              description='JointState topic from simulation'),
+        DeclareLaunchArgument('joint_state_topic',
+                              default_value='/servo_pwm/joint_states',
+                              description='Output JointState topic (measured)'),
+        DeclareLaunchArgument('pulse_topic',
+                              default_value='/servo_pwm/pulses_us',
+                              description='Output raw pulse-width topic (us)'),
         DeclareLaunchArgument('servo_channels', default_value='4',
-                              description='Number of servo channels (1-4)'),
+                              description='Number of servo channels to publish (1-4)'),
         DeclareLaunchArgument('servo_min_angle', default_value='-1.5708',
-                              description='Minimum servo angle (rad)'),
+                              description='Angle mapped to servo_min_pulse_us (rad)'),
         DeclareLaunchArgument('servo_max_angle', default_value='1.5708',
-                              description='Maximum servo angle (rad)'),
+                              description='Angle mapped to servo_max_pulse_us (rad)'),
         DeclareLaunchArgument('servo_min_pulse_us', default_value='500',
-                              description='Minimum servo pulse width (us)'),
+                              description='Pulse width at servo_min_angle (us)'),
         DeclareLaunchArgument('servo_max_pulse_us', default_value='2500',
-                              description='Maximum servo pulse width (us)'),
+                              description='Pulse width at servo_max_angle (us)'),
 
         Node(
             package='hils_bridge_actuator_servo_pwm',
             executable='pwm_bridge_node',
-            name='hils_pwm_bridge',
+            name='hils_servo_pwm_bridge',
             parameters=[{
                 'serial_port': LaunchConfiguration('serial_port'),
                 'baudrate': LaunchConfiguration('baudrate'),
-                'max_hz': LaunchConfiguration('max_hz'),
                 'joint_state_topic': LaunchConfiguration('joint_state_topic'),
+                'pulse_topic': LaunchConfiguration('pulse_topic'),
                 'servo_channels': LaunchConfiguration('servo_channels'),
                 'servo_min_angle': LaunchConfiguration('servo_min_angle'),
                 'servo_max_angle': LaunchConfiguration('servo_max_angle'),

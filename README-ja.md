@@ -76,9 +76,9 @@ hils_bridge_<sensor_type>/hils_bridge_<sensor_type>_<protocol_or_vendor_series>/
 
 ### アクチュエータ
 
-| パッケージ | 対象デバイス | 出力 | ファームウェア | 状態 |
-|-----------|------------|------|--------------|------|
-| `hils_bridge_actuator_servo_pwm` | RC サーボ（任意のベンダー） | PWM 50Hz, 500–2500us パルス | rp2040_actuator_servo_pwm | 実装済・未検証 |
+| パッケージ | 対象デバイス | 取り込み信号 | ファームウェア | 状態 |
+|-----------|------------|-------------|--------------|------|
+| `hils_bridge_actuator_servo_pwm` | RC サーボ（任意のベンダー、取り込み方向） | 制御器が出力する 50 Hz / 500–2500 us の PWM を計測 | rp2040_actuator_servo_pwm | 実装済・**動作確認済** |
 
 ### エンコーダ
 

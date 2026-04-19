@@ -1,136 +1,229 @@
 #!/usr/bin/env python3
 """
-HILS RC Servo PWM Bridge Node
+HILS RC Servo PWM Capture Bridge Node
 
-Subscribes to a ROS JointState topic from a simulator, converts joint
-positions to servo pulse widths, and sends them to an RP2040 (running
-the rp2040_actuator_servo_pwm firmware) via USB CDC using the HILS
-framing protocol.
-
-Encoder feedback emulation lives in the separate
-hils_bridge_encoder_quadrature package, since PWM (controller -> servo)
-and encoder pulses (motor -> controller) are different roles in the
-HILS loop and should not share a payload.
+Reads measured servo PWM pulse widths reported by the RP2040
+(rp2040_actuator_servo_pwm firmware) via USB CDC and publishes them
+as ROS topics so the simulation / test harness can evaluate the PWM
+commands the robot controller is issuing.
 
 Data flow:
-    /joint_states -> angle-to-pulse conversion -> frame protocol -> serial -> RP2040
-    RP2040 -> PIO PWM servo signals
+    Robot controller PWM -> RP2040 GPIO (PIO capture) -> USB CDC
+                         -> this node -> ROS topics
+                            - sensor_msgs/JointState (converted angle)
+                            - std_msgs/UInt16MultiArray (raw pulse widths, us)
+
+Encoder output emulation (feedback direction, motor -> controller)
+remains in the separate hils_bridge_encoder_quadrature package, since
+PWM input (controller -> servo) and encoder pulses play different
+roles in the HILS loop and should not share a payload.
 """
 
-import struct
 import math
+import struct
+import threading
+import time
 
 import rclpy
+import serial
 from rcl_interfaces.msg import ParameterDescriptor, FloatingPointRange
+from rclpy.node import Node
 from sensor_msgs.msg import JointState
+from std_msgs.msg import Header, UInt16MultiArray
 
-from hils_bridge_base.serial_bridge_base import SerialBridgeBase
 from hils_bridge_base import frame_protocol
 
-# Message type for servo commands (must match firmware)
-MSG_TYPE_SERVO_CMD = 0x20
+# Message type emitted by firmware (must match HILS_MSG_TYPE_SERVO_MEASURED).
+MSG_TYPE_SERVO_MEASURED = 0x21
+
+# One header (msg_type, channel_count) + N entries (channel, valid, pulse_us, period_us).
+_HEADER_STRUCT = struct.Struct('<BB')
+_CHANNEL_STRUCT = struct.Struct('<BBHH')
 
 
-class PwmBridgeNode(SerialBridgeBase):
-    """ROS2 node that converts JointState messages to servo PWM commands."""
+class PwmBridgeNode(Node):
+    """ROS2 node that reads PWM pulse measurements from RP2040 and publishes them."""
 
     def __init__(self):
-        super().__init__(
-            node_name='hils_servo_pwm_bridge',
-            default_baudrate=115200,
-        )
+        super().__init__('hils_servo_pwm_bridge')
 
-        # Declare parameters
-        self.declare_parameter('joint_state_topic', '/joint_states')
+        # Serial parameters
+        self.declare_parameter('serial_port', '/dev/ttyACM0')
+        self.declare_parameter('baudrate', 115200)
+
+        # Output topics
+        self.declare_parameter('joint_state_topic', '/servo_pwm/joint_states')
+        self.declare_parameter('pulse_topic', '/servo_pwm/pulses_us')
+
+        # Channel configuration
         self.declare_parameter('servo_channels', 4,
-            ParameterDescriptor(description='Number of servo channels (1-4)'))
+            ParameterDescriptor(description='Number of servo channels to publish (1-4)'))
+        self.declare_parameter('joint_names', [''],
+            ParameterDescriptor(
+                description='Ordered list of joint names per channel. '
+                            'Empty string means "servo_<channel>".'))
+
+        # Pulse <-> angle mapping (must match the controller under test).
         self.declare_parameter('servo_min_angle', -math.pi / 2,
             ParameterDescriptor(
-                description='Minimum servo angle in radians',
+                description='Angle mapped to servo_min_pulse_us (rad)',
                 floating_point_range=[FloatingPointRange(
                     from_value=-math.pi, to_value=0.0, step=0.0)]))
         self.declare_parameter('servo_max_angle', math.pi / 2,
             ParameterDescriptor(
-                description='Maximum servo angle in radians',
+                description='Angle mapped to servo_max_pulse_us (rad)',
                 floating_point_range=[FloatingPointRange(
                     from_value=0.0, to_value=math.pi, step=0.0)]))
         self.declare_parameter('servo_min_pulse_us', 500,
-            ParameterDescriptor(description='Minimum servo pulse width (us)'))
+            ParameterDescriptor(description='Pulse width corresponding to servo_min_angle (us)'))
         self.declare_parameter('servo_max_pulse_us', 2500,
-            ParameterDescriptor(description='Maximum servo pulse width (us)'))
-        self.declare_parameter('joint_names', [''],
-            ParameterDescriptor(
-                description='Ordered list of joint names to map to channels. '
-                            'Empty string means use positional index.'))
+            ParameterDescriptor(description='Pulse width corresponding to servo_max_angle (us)'))
 
-        # Subscribe to JointState
-        topic = self.get_parameter('joint_state_topic').value
-        self.create_subscription(
-            JointState, topic, self._joint_state_callback, 1)
+        # Publishers
+        self._joint_pub = self.create_publisher(
+            JointState, self.get_parameter('joint_state_topic').value, 10)
+        self._pulse_pub = self.create_publisher(
+            UInt16MultiArray, self.get_parameter('pulse_topic').value, 10)
+
+        # Open serial port
+        port = self.get_parameter('serial_port').value
+        baudrate = self.get_parameter('baudrate').value
+        try:
+            self._serial = serial.Serial(port, baudrate, timeout=0)
+        except serial.SerialException as e:
+            self.get_logger().error(f'Failed to open serial port {port}: {e}')
+            raise
+        self.get_logger().info(f'Opened serial port: {port} @ {baudrate} baud')
+
+        # Frame receiver and background read thread
+        self._receiver = frame_protocol.FrameProtocolReceiver()
+        self._stop_event = threading.Event()
+        self._read_thread = threading.Thread(target=self._serial_read_loop, daemon=True)
+        self._read_thread.start()
+
+        # Stats
+        self._report_count = 0
+        self.create_timer(10.0, self._stats_callback)
 
         self.get_logger().info(
-            f'Servo PWM Bridge started: topic={topic}, '
+            f'Servo PWM capture bridge started: '
+            f'joint_state_topic={self.get_parameter("joint_state_topic").value}, '
+            f'pulse_topic={self.get_parameter("pulse_topic").value}, '
             f'channels={self.get_parameter("servo_channels").value}, '
             f'pulse=[{self.get_parameter("servo_min_pulse_us").value}, '
             f'{self.get_parameter("servo_max_pulse_us").value}] us, '
             f'angle=[{self.get_parameter("servo_min_angle").value:.3f}, '
             f'{self.get_parameter("servo_max_angle").value:.3f}] rad')
 
-    def _angle_to_pulse_us(self, angle_rad: float) -> int:
-        """Linearly map [servo_min_angle, servo_max_angle] to
-        [servo_min_pulse_us, servo_max_pulse_us]; clamp to [500, 2500] us.
-        """
+    # ---------- Serial input ----------
+
+    def _serial_read_loop(self):
+        """Background thread: drain the serial port and parse frames."""
+        while not self._stop_event.is_set() and rclpy.ok():
+            try:
+                data = self._serial.read(256)
+            except serial.SerialException as e:
+                self.get_logger().error(f'Serial read failed: {e}')
+                return
+
+            if not data:
+                time.sleep(0.005)
+                continue
+
+            for payload in self._receiver.feed(data):
+                self._handle_payload(payload)
+
+    def _handle_payload(self, payload: bytes) -> None:
+        if len(payload) < _HEADER_STRUCT.size:
+            return
+
+        msg_type, channel_count = _HEADER_STRUCT.unpack_from(payload, 0)
+        if msg_type != MSG_TYPE_SERVO_MEASURED:
+            return
+
+        expected = _HEADER_STRUCT.size + channel_count * _CHANNEL_STRUCT.size
+        if len(payload) < expected:
+            self.get_logger().warn(
+                f'Truncated servo measurement: got {len(payload)} bytes, '
+                f'expected {expected}')
+            return
+
+        channels = []
+        offset = _HEADER_STRUCT.size
+        for _ in range(channel_count):
+            channels.append(_CHANNEL_STRUCT.unpack_from(payload, offset))
+            offset += _CHANNEL_STRUCT.size
+
+        self._publish_measurements(channels)
+        self._report_count += 1
+
+    # ---------- Publishing ----------
+
+    def _publish_measurements(self, channels) -> None:
+        """Publish measured pulses as JointState and raw UInt16MultiArray."""
+        num = min(self.get_parameter('servo_channels').value, len(channels))
+        if num <= 0:
+            return
+
+        joint_names_param = self.get_parameter('joint_names').value
+        names = []
+        positions = []
+        pulses = []
+
+        now = self.get_clock().now().to_msg()
+
+        for idx in range(num):
+            ch, valid, pulse_us, _period_us = channels[idx]
+
+            if joint_names_param and ch < len(joint_names_param) and joint_names_param[ch]:
+                names.append(joint_names_param[ch])
+            else:
+                names.append(f'servo_{ch}')
+
+            pulses.append(pulse_us if valid else 0)
+
+            if valid:
+                positions.append(self._pulse_to_angle_rad(pulse_us))
+            else:
+                positions.append(float('nan'))
+
+        js = JointState()
+        js.header = Header(stamp=now, frame_id='')
+        js.name = names
+        js.position = positions
+        self._joint_pub.publish(js)
+
+        arr = UInt16MultiArray()
+        arr.data = pulses
+        self._pulse_pub.publish(arr)
+
+    def _pulse_to_angle_rad(self, pulse_us: int) -> float:
+        """Inverse of the angle -> pulse mapping used on the controller side."""
         min_angle = self.get_parameter('servo_min_angle').value
         max_angle = self.get_parameter('servo_max_angle').value
         min_pulse = self.get_parameter('servo_min_pulse_us').value
         max_pulse = self.get_parameter('servo_max_pulse_us').value
 
-        angle_rad = max(min_angle, min(max_angle, angle_rad))
-        t = (angle_rad - min_angle) / (max_angle - min_angle)
-        pulse = int(min_pulse + t * (max_pulse - min_pulse) + 0.5)
-        return max(500, min(2500, pulse))
+        if max_pulse == min_pulse:
+            return min_angle
+        t = (pulse_us - min_pulse) / (max_pulse - min_pulse)
+        return min_angle + t * (max_angle - min_angle)
 
-    def _find_joint_index(self, msg: JointState, joint_name: str) -> int:
-        try:
-            return list(msg.name).index(joint_name)
-        except ValueError:
-            return -1
+    # ---------- Housekeeping ----------
 
-    def _joint_state_callback(self, msg: JointState):
-        """Convert JointState to servo commands and send via serial."""
-        if not self.check_rate_limit():
-            return
+    def _stats_callback(self):
+        self.get_logger().info(
+            f'Status: reports={self._report_count}, '
+            f'port={self.get_parameter("serial_port").value}')
 
-        num_channels = self.get_parameter('servo_channels').value
-        joint_names = self.get_parameter('joint_names').value
-
-        channels = []
-        for ch in range(num_channels):
-            if joint_names and ch < len(joint_names) and joint_names[ch]:
-                joint_idx = self._find_joint_index(msg, joint_names[ch])
-                if joint_idx < 0:
-                    continue
-            else:
-                joint_idx = ch
-
-            if joint_idx >= len(msg.position):
-                continue
-
-            angle = msg.position[joint_idx]
-            pulse_us = self._angle_to_pulse_us(angle)
-            channels.append((ch, pulse_us))
-
-        if not channels:
-            return
-
-        # Header: msg_type (1) + channel_count (1)
-        # Per channel: channel (1) + pulse_us (2, LE)
-        payload = struct.pack('<BB', MSG_TYPE_SERVO_CMD, len(channels))
-        for ch, pulse in channels:
-            payload += struct.pack('<BH', ch, pulse)
-
-        frame = frame_protocol.build_frame(payload)
-        self.serial_write(frame)
+    def destroy_node(self):
+        self._stop_event.set()
+        if hasattr(self, '_serial') and self._serial.is_open:
+            try:
+                self._serial.close()
+            except serial.SerialException:
+                pass
+        super().destroy_node()
 
 
 def main(args=None):

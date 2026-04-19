@@ -3,13 +3,14 @@
 <package format="3">
   <name>hils_bridge_actuator_servo_pwm</name>
   <version>0.1.0</version>
-  <description>HILS bridge: ROS JointState to RP2040 RC servo PWM emulator via USB CDC</description>
+  <description>HILS bridge: captures RC servo PWM signals emitted by the robot controller via RP2040 and publishes the measured pulse widths to ROS for evaluation</description>
   <maintainer email="hijimasa@gmail.com">Masaaki Hijikata</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>ament_cmake_python</buildtool_depend>
   <depend>rclpy</depend>
   <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
   <depend>hils_bridge_base</depend>
   <exec_depend>python3-serial</exec_depend>
   <test_depend>ament_lint_auto</test_depend>

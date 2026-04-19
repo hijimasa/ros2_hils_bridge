@@ -76,9 +76,9 @@ The same convention applies to the matching firmware under `firmware/rp2040_<sen
 
 ### Actuator
 
-| Package | Target Device | Output | Firmware | Status |
-|---------|--------------|--------|----------|--------|
-| `hils_bridge_actuator_servo_pwm` | RC servo (any vendor) | PWM 50Hz, 500–2500us pulse | rp2040_actuator_servo_pwm | Done, unverified |
+| Package | Target Device | Captured Signal | Firmware | Status |
+|---------|--------------|-----------------|----------|--------|
+| `hils_bridge_actuator_servo_pwm` | RC servo (any vendor, capture direction) | 50 Hz / 500–2500 us servo PWM emitted by the controller | rp2040_actuator_servo_pwm | Done, **verified** |
 
 ### Encoder
 
