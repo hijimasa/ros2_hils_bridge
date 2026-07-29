@@ -21,10 +21,10 @@
     downsample_mode: "uniform"
 
     # Network config
-    # lidar_ip: IP assigned to the network interface acting as the emulated LiDAR
+    # device_ip: IP assigned to the network interface acting as the emulated LiDAR
     # host_ip: Robot PC IP where livox_ros_driver2 runs
-    # network_interface: Network interface to bind (e.g. "eth1"). Empty = auto from lidar_ip.
-    lidar_ip: "192.168.1.12"
+    # network_interface: Network interface to bind (e.g. "eth1"). Empty = auto from device_ip.
+    device_ip: "192.168.1.12"
     host_ip: "192.168.1.5"
     serial_number: "0TFDFH600100511"
     network_interface: ""

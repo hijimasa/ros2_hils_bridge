@@ -23,7 +23,6 @@ Data flow:
   Simulation (PointCloud2/IMU) -> this node -> UDP (Livox SDK2) -> Robot PC
 """
 
-import socket
 import struct
 import threading
 import time
@@ -31,13 +30,12 @@ import time
 import numpy as np
 
 import rclpy
-from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rcl_interfaces.msg import ParameterDescriptor, IntegerRange, SetParametersResult
 from sensor_msgs.msg import PointCloud2, Imu
 from sensor_msgs_py import point_cloud2
 
-from hils_bridge_base import network_utils
+from hils_bridge_base.udp_emulator_base import UdpEmulatorBase
 
 # ── Livox SDK2 constants ──
 
@@ -159,15 +157,19 @@ def _build_imu_packet(gyro_x, gyro_y, gyro_z, acc_x, acc_y, acc_z,
 
 # ── ROS Node ──
 
-class LivoxEmulatorNode(Node):
+class LivoxEmulatorNode(UdpEmulatorBase):
     def __init__(self):
-        super().__init__('hils_livox_emulator')
+        super().__init__(
+            node_name='hils_livox_emulator',
+            default_device_ip='192.168.1.12',
+            default_host_ip='192.168.1.5',
+        )
 
-        # Parameters
+        # Parameters (device_ip, host_ip, network_interface and max_hz
+        # are declared by UdpEmulatorBase)
         self.declare_parameter('pointcloud_topic', '/livox/lidar')
         self.declare_parameter('imu_topic', '/livox/imu')
         self.declare_parameter('enable_imu', True)
-        self.declare_parameter('max_hz', 10.0)
         self.declare_parameter('max_points_per_frame', 20000,
             ParameterDescriptor(
                 description='Max points per frame (no USB limit in direct UDP mode)',
@@ -179,72 +181,28 @@ class LivoxEmulatorNode(Node):
         self.declare_parameter('downsample_mode', 'uniform',
             ParameterDescriptor(
                 description='Downsample mode: "uniform" (even spacing) or "near" (closest points first)'))
-        self.declare_parameter('lidar_ip', '192.168.1.12')
-        self.declare_parameter('host_ip', '192.168.1.5')
         self.declare_parameter('serial_number', '0TFDFH600100511')
-        self.declare_parameter('network_interface', '',
-            ParameterDescriptor(
-                description='Network interface to bind (e.g. "eth1"). '
-                            'Empty = auto-detect from lidar_ip.'))
 
-        self.add_on_set_parameters_callback(self._on_param_change)
+        self.add_on_set_parameters_callback(self._on_livox_param_change)
 
-        self._host_ip = self.get_parameter('host_ip').value
         self._serial_number = self.get_parameter('serial_number').value
-        self._network_interface = self.get_parameter('network_interface').value
-
-        # Determine lidar_ip and validate network
-        if self._network_interface:
-            self._lidar_ip, netmask = network_utils.get_interface_ip_and_netmask(
-                self._network_interface)
-            self.get_logger().info(
-                f'Using {self._network_interface}: ip={self._lidar_ip}, '
-                f'netmask={netmask}')
-        else:
-            self._lidar_ip = self.get_parameter('lidar_ip').value
-            if not network_utils.verify_ip_available(self._lidar_ip):
-                self.get_logger().error(
-                    f'{self._lidar_ip} is not assigned to any interface. '
-                    f'Set network_interface parameter, or manually run:\n'
-                    f'  sudo ip addr add {self._lidar_ip}/24 dev <interface>')
-                raise RuntimeError(f'Cannot bind to {self._lidar_ip}')
-            netmask = network_utils.find_netmask_for_ip(self._lidar_ip)
-
-        if netmask:
-            if not network_utils.validate_subnet(
-                    self._lidar_ip, self._host_ip, netmask):
-                raise RuntimeError(
-                    f'{self._host_ip} is not on the same subnet as '
-                    f'{self._lidar_ip}')
-            self.get_logger().info(
-                f'Subnet OK: {self._lidar_ip} and {self._host_ip} '
-                f'are on the same network')
 
         # State
         self._streaming = False
-        self._udp_cnt = 0
         self._frame_cnt = 0
         self._points_sent = 0
-        self._lock = threading.Lock()
 
-        # Create UDP sockets
+        # Create UDP sockets via base class
         # Discovery uses 0.0.0.0 to receive broadcasts (255.255.255.255:56000)
-        self._sock_discovery = network_utils.create_udp_socket(
-            '', LIVOX_PORT_DISCOVERY,
-            network_interface=self._network_interface, reuse=True)
-        self._sock_cmd = network_utils.create_udp_socket(
-            self._lidar_ip, LIVOX_PORT_CMD_LIDAR,
-            network_interface=self._network_interface)
-        self._sock_pointcloud = network_utils.create_udp_socket(
-            self._lidar_ip, LIVOX_PORT_POINTCLOUD_LIDAR,
-            network_interface=self._network_interface)
-        self._sock_imu = network_utils.create_udp_socket(
-            self._lidar_ip, LIVOX_PORT_IMU_LIDAR,
-            network_interface=self._network_interface)
+        self._sock_discovery = self.create_device_socket(
+            LIVOX_PORT_DISCOVERY, reuse=True, bind_any=True)
+        self._sock_cmd = self.create_device_socket(LIVOX_PORT_CMD_LIDAR)
+        self._sock_pointcloud = self.create_device_socket(
+            LIVOX_PORT_POINTCLOUD_LIDAR)
+        self._sock_imu = self.create_device_socket(LIVOX_PORT_IMU_LIDAR)
 
-        iface_str = f' (dev={self._network_interface})' if self._network_interface else ''
         self.get_logger().info(
-            f'UDP sockets bound to {self._lidar_ip}{iface_str} '
+            f'UDP sockets bound to {self.device_ip} '
             f'(discovery:{LIVOX_PORT_DISCOVERY}, cmd:{LIVOX_PORT_CMD_LIDAR}, '
             f'pc:{LIVOX_PORT_POINTCLOUD_LIDAR}, imu:{LIVOX_PORT_IMU_LIDAR})')
 
@@ -269,11 +227,7 @@ class LivoxEmulatorNode(Node):
             self.create_subscription(Imu, imu_topic,
                                      self._imu_callback, sensor_qos)
 
-        self.last_send_time = 0.0
         self.frame_count = 0
-
-        # Periodic stats timer
-        self.create_timer(5.0, self._stats_callback)
 
         self.get_logger().info(
             f'Livox Emulator started: topic={pc_topic}, '
@@ -281,10 +235,10 @@ class LivoxEmulatorNode(Node):
             f'max_pts={self.get_parameter("max_points_per_frame").value}, '
             f'downsample={self.get_parameter("downsample_mode").value}')
 
-    def _on_param_change(self, params):
+    def _on_livox_param_change(self, params):
         for param in params:
             if param.name in ('max_points_per_frame', 'point_data_type',
-                              'max_hz', 'downsample_mode'):
+                              'downsample_mode'):
                 self.get_logger().info(f'{param.name} changed to {param.value}')
         return SetParametersResult(successful=True)
 
@@ -320,12 +274,12 @@ class LivoxEmulatorNode(Node):
         det[1] = LIVOX_DEV_TYPE_MID360       # dev_type
         sn_bytes = self._serial_number.encode('ascii')[:16].ljust(16, b'\x00')
         det[2:18] = sn_bytes                 # sn[16]
-        ip_parts = [int(x) for x in self._lidar_ip.split('.')]
+        ip_parts = [int(x) for x in self.device_ip.split('.')]
         det[18:22] = bytes(ip_parts)         # lidar_ip[4]
         struct.pack_into('<H', det, 22, LIVOX_PORT_CMD_LIDAR)  # cmd_port
 
         resp = _build_sdk2_packet(LIVOX_CMD_LIDAR_SEARCH, 1, seq_num, bytes(det))
-        self._sock_discovery.sendto(resp, addr)
+        self.send_udp(self._sock_discovery, resp, addr, channel='discovery')
 
     def _poll_command(self):
         try:
@@ -356,7 +310,7 @@ class LivoxEmulatorNode(Node):
             self.get_logger().debug(f'Unknown cmd_id=0x{cmd_id:04X}')
             resp = _build_sdk2_packet(cmd_id, 1, seq_num, b'\x00')
 
-        self._sock_cmd.sendto(resp, addr)
+        self.send_udp(self._sock_cmd, resp, addr, channel='command')
 
     # ── Point cloud processing ──
 
@@ -364,10 +318,7 @@ class LivoxEmulatorNode(Node):
         if not self._streaming:
             return
 
-        # Rate limiting
-        now = time.monotonic()
-        min_interval = 1.0 / self.get_parameter('max_hz').value
-        if (now - self.last_send_time) < min_interval:
+        if not self.check_rate_limit():
             return
 
         data_type = self.get_parameter('point_data_type').value
@@ -392,27 +343,25 @@ class LivoxEmulatorNode(Node):
 
         offset = 0
         remaining = dot_num
-        host = (self._host_ip, LIVOX_PORT_POINTCLOUD_HOST)
+        host = (self.host_ip, LIVOX_PORT_POINTCLOUD_HOST)
 
         while remaining > 0:
             chunk = min(remaining, max_pts_per_pkt)
             chunk_bytes = point_data[offset:offset + chunk * point_size]
             pkt = _build_point_packet(chunk, data_type, timestamp_ns,
-                                      chunk_bytes, self._udp_cnt, self._frame_cnt)
-            try:
-                self._sock_pointcloud.sendto(pkt, host)
-            except OSError as e:
-                self.get_logger().error(f'UDP send failed: {e}')
+                                      chunk_bytes, self.next_udp_cnt(),
+                                      self._frame_cnt)
+            if not self.send_udp(self._sock_pointcloud, pkt, host,
+                                 channel='data'):
                 return
 
-            self._udp_cnt += 1
             self._points_sent += chunk
             offset += chunk * point_size
             remaining -= chunk
             timestamp_ns += int(chunk * 4.7e3)
 
         self._frame_cnt += 1
-        self.last_send_time = now
+        self.mark_sent()
         self.frame_count += 1
 
     def _extract_points(self, msg: PointCloud2, max_pts: int, data_type: int,
@@ -487,12 +436,9 @@ class LivoxEmulatorNode(Node):
         pkt = _build_imu_packet(
             msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z,
             msg.linear_acceleration.x, msg.linear_acceleration.y, msg.linear_acceleration.z,
-            timestamp_ns, self._udp_cnt, self._frame_cnt)
-        self._udp_cnt += 1
-        try:
-            self._sock_imu.sendto(pkt, (self._host_ip, LIVOX_PORT_IMU_HOST))
-        except OSError:
-            pass
+            timestamp_ns, self.next_udp_cnt(), self._frame_cnt)
+        self.send_udp(self._sock_imu, pkt,
+                      (self.host_ip, LIVOX_PORT_IMU_HOST), channel='imu')
 
     # ── Stats ──
 
@@ -506,12 +452,8 @@ class LivoxEmulatorNode(Node):
 
     def destroy_node(self):
         self._quit = True
-        for sock in (self._sock_discovery, self._sock_cmd,
-                     self._sock_pointcloud, self._sock_imu):
-            try:
-                sock.close()
-            except Exception:
-                pass
+        if hasattr(self, '_protocol_thread'):
+            self._protocol_thread.join(timeout=1.0)
         super().destroy_node()
 
 

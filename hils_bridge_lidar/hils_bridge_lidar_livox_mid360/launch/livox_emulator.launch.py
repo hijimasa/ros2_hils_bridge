@@ -43,7 +43,7 @@ def generate_launch_description():
                 'max_points_per_frame': LaunchConfiguration('max_points_per_frame'),
                 'point_data_type': LaunchConfiguration('point_data_type'),
                 'downsample_mode': LaunchConfiguration('downsample_mode'),
-                'lidar_ip': LaunchConfiguration('lidar_ip'),
+                'device_ip': LaunchConfiguration('lidar_ip'),
                 'host_ip': LaunchConfiguration('host_ip'),
                 'serial_number': LaunchConfiguration('serial_number'),
                 'network_interface': LaunchConfiguration('network_interface'),
