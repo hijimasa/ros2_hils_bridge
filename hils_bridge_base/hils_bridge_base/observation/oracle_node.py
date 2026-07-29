@@ -25,7 +25,9 @@ Usage (alongside the scenario runner):
 
 import datetime
 import os
+import signal
 import socket as _socket
+import subprocess
 import threading
 import time
 
@@ -67,6 +69,21 @@ class ScenarioOracle(Node):
             ParameterDescriptor(
                 description='Abort if the scenario has not finished and '
                             'settled within this time.'))
+        self.declare_parameter('record_bag', False,
+            ParameterDescriptor(
+                description='Record the observed topics with "ros2 bag '
+                            'record" in the observed domain (docs 6.5).'))
+        self.declare_parameter('record_pcap', False,
+            ParameterDescriptor(
+                description='Record a PCAP with tcpdump. Needs tcpdump '
+                            'and CAP_NET_RAW; failure to start is logged '
+                            'and ignored.'))
+        self.declare_parameter('pcap_interface', 'any',
+            ParameterDescriptor(description='tcpdump capture interface.'))
+        self.declare_parameter('pcap_filter', '',
+            ParameterDescriptor(
+                description='tcpdump capture filter, e.g. '
+                            '"udp portrange 56000-56501".'))
 
         scenario_file = self.get_parameter('scenario_file').value
         if not scenario_file:
@@ -102,6 +119,14 @@ class ScenarioOracle(Node):
         self.get_logger().info(
             f'observing domain {observe_domain}: topics={topics}')
 
+        # Optional evidence recording (docs 6.5, 20 item 11). Started
+        # immediately so the pre-fault baseline is captured too.
+        self._bag_proc = None
+        self._bag_path = None
+        self._pcap_proc = None
+        self._pcap_path = None
+        self._start_recorders(observe_domain, topics)
+
         # Runner state polling (control domain).
         runner_ns = self.get_parameter('runner_ns').value
         self._state_client = self.create_client(
@@ -116,6 +141,69 @@ class ScenarioOracle(Node):
         self._deadline_mono = time.monotonic() + \
             self.get_parameter('max_wait_sec').value
         self.create_timer(0.5, self._poll)
+
+    # -- evidence recording --
+
+    def _start_recorders(self, observe_domain: int, topics):
+        out_dir = self.get_parameter('output_dir').value
+        os.makedirs(out_dir, exist_ok=True)
+        stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        if self.get_parameter('record_bag').value:
+            if topics:
+                self._bag_path = os.path.join(
+                    out_dir, f'{self.scenario.scenario_id}_{stamp}_bag')
+                env = dict(os.environ,
+                           ROS_DOMAIN_ID=str(observe_domain))
+                try:
+                    self._bag_proc = subprocess.Popen(
+                        ['ros2', 'bag', 'record', '-o', self._bag_path]
+                        + list(topics),
+                        env=env, stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True)
+                    self.get_logger().info(
+                        f'recording bag: {self._bag_path}')
+                except OSError as e:
+                    self.get_logger().warning(f'bag record failed: {e}')
+                    self._bag_path = None
+            else:
+                self.get_logger().warning(
+                    'record_bag requested but no topics to record')
+
+        if self.get_parameter('record_pcap').value:
+            self._pcap_path = os.path.join(
+                out_dir, f'{self.scenario.scenario_id}_{stamp}.pcap')
+            cmd = ['tcpdump', '-i',
+                   self.get_parameter('pcap_interface').value,
+                   '-w', self._pcap_path]
+            pcap_filter = self.get_parameter('pcap_filter').value
+            if pcap_filter:
+                cmd += pcap_filter.split()
+            try:
+                self._pcap_proc = subprocess.Popen(
+                    cmd, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, start_new_session=True)
+                self.get_logger().info(
+                    f'recording pcap: {self._pcap_path}')
+            except OSError as e:
+                self.get_logger().warning(
+                    f'tcpdump failed to start (missing binary or '
+                    f'CAP_NET_RAW?): {e}')
+                self._pcap_path = None
+
+    def _stop_recorders(self):
+        for proc, sig in ((self._bag_proc, signal.SIGINT),
+                          (self._pcap_proc, signal.SIGTERM)):
+            if proc is None or proc.poll() is not None:
+                continue
+            try:
+                os.killpg(os.getpgid(proc.pid), sig)
+                proc.wait(timeout=10.0)
+            except (OSError, subprocess.TimeoutExpired):
+                proc.kill()
+        self._bag_proc = None
+        self._pcap_proc = None
 
     # -- runner polling --
 
@@ -184,6 +272,7 @@ class ScenarioOracle(Node):
     def _finish(self, *, timed_out: bool):
         if self.done.is_set():
             return
+        self._stop_recorders()
         t_end = (time.monotonic() - self._start_mono
                  if self._start_mono is not None else 0.0)
         start = self._start_mono or time.monotonic()
@@ -216,6 +305,8 @@ class ScenarioOracle(Node):
             'diagnostic_records': len(diagnostics_rel),
             'runner_events': self._runner_events,
             'timed_out': timed_out,
+            'bag_path': self._bag_path,
+            'pcap_path': self._pcap_path,
         }
         environment = {
             'scenario_file': self.scenario_file,
@@ -266,6 +357,7 @@ class ScenarioOracle(Node):
     # -- teardown --
 
     def shutdown_observation(self):
+        self._stop_recorders()
         self._obs_executor.shutdown(timeout_sec=2.0)
         self._recorder.destroy_node()
         rclpy.shutdown(context=self._obs_context)

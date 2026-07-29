@@ -1,0 +1,109 @@
+#!/bin/bash
+# Hardware-free HILS end-to-end regression: NMEA checksum fault vs the
+# real nmea_navsat_driver over a socat pty pair.
+#
+#   NavSatFix publisher -> hils_gps_bridge -> pty <-> pty
+#       -> nmea_navsat_driver -> /fix  (observed by scenario_oracle)
+#
+# Requires (in the current shell): a sourced ROS 2 environment with
+# hils_bridge_base / hils_bridge_gps_nmea0183 / hils_bringup built, plus
+# ros-<distro>-nmea-navsat-driver and socat installed.
+#
+# Exit code: the oracle's verdict (0 = all expectations pass).
+set -u
+
+WORK=$(mktemp -d)
+OBSERVE_DOMAIN="${ROS_DOMAIN_ID:-0}"
+SCENARIO="$(ros2 pkg prefix hils_bringup)/share/hils_bringup/scenarios/gps/gps_checksum_error_001.yaml"
+PIDS=()
+
+cleanup() {
+    for pid in "${PIDS[@]}"; do
+        kill "$pid" 2>/dev/null
+    done
+    wait 2>/dev/null
+}
+trap cleanup EXIT
+
+echo "[e2e] workdir: $WORK (domain $OBSERVE_DOMAIN)"
+
+# 1. Virtual serial pair
+socat -d pty,raw,echo=0,link="$WORK/ttyBRIDGE" \
+      pty,raw,echo=0,link="$WORK/ttyDRIVER" > "$WORK/socat.log" 2>&1 &
+PIDS+=($!)
+for _ in $(seq 50); do
+    [ -e "$WORK/ttyBRIDGE" ] && [ -e "$WORK/ttyDRIVER" ] && break
+    sleep 0.1
+done
+[ -e "$WORK/ttyDRIVER" ] || { echo "[e2e] socat failed"; exit 2; }
+
+# 2. Simulation source: 5 Hz NavSatFix
+python3 - > "$WORK/fix_pub.log" 2>&1 <<'EOF' &
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import NavSatFix, NavSatStatus
+
+rclpy.init()
+node = Node('fake_gps_source')
+pub = node.create_publisher(NavSatFix, '/gps/fix', 10)
+
+def tick():
+    msg = NavSatFix()
+    msg.header.stamp = node.get_clock().now().to_msg()
+    msg.header.frame_id = 'gps'
+    msg.status.status = NavSatStatus.STATUS_FIX
+    msg.status.service = NavSatStatus.SERVICE_GPS
+    msg.latitude, msg.longitude, msg.altitude = 35.6812, 139.7671, 40.0
+    pub.publish(msg)
+
+node.create_timer(0.2, tick)
+rclpy.spin(node)
+EOF
+PIDS+=($!)
+
+# 3. Emulator bridge and real driver
+ros2 run hils_bridge_gps_nmea0183 gps_bridge_node --ros-args \
+    -p serial_port:="$WORK/ttyBRIDGE" -p baudrate:=9600 \
+    > "$WORK/gps_bridge.log" 2>&1 &
+PIDS+=($!)
+ros2 run nmea_navsat_driver nmea_serial_driver --ros-args \
+    -p port:="$WORK/ttyDRIVER" -p baud:=9600 \
+    > "$WORK/nmea_driver.log" 2>&1 &
+PIDS+=($!)
+
+# Wait until the real driver republishes /fix
+for _ in $(seq 60); do
+    if timeout 2 ros2 topic echo --once /fix > /dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+timeout 2 ros2 topic echo --once /fix > /dev/null 2>&1 || {
+    echo '[e2e] /fix never appeared; driver logs:'
+    tail -20 "$WORK/nmea_driver.log" "$WORK/gps_bridge.log"
+    exit 2
+}
+echo '[e2e] normal path up, starting oracle + runner'
+
+# 4. Oracle (judges) and runner (injects)
+ros2 run hils_bridge_base scenario_oracle --ros-args \
+    -p scenario_file:="$SCENARIO" \
+    -p observe_domain_id:="$OBSERVE_DOMAIN" \
+    -p output_dir:="$WORK/reports" \
+    > "$WORK/oracle.log" 2>&1 &
+ORACLE_PID=$!
+PIDS+=($ORACLE_PID)
+sleep 3
+ros2 run hils_bridge_base scenario_runner --ros-args \
+    -p scenario_file:="$SCENARIO" > "$WORK/runner.log" 2>&1 &
+PIDS+=($!)
+
+wait "$ORACLE_PID"
+CODE=$?
+
+echo '[e2e] oracle verdicts:'
+grep -aE '\[oracle\]' "$WORK/oracle.log" || cat "$WORK/oracle.log"
+cp -r "$WORK/reports" "${E2E_REPORT_DIR:-$WORK}" 2>/dev/null || true
+echo "[e2e] reports: ${E2E_REPORT_DIR:-$WORK/reports}"
+echo "[e2e] exit: $CODE"
+exit "$CODE"

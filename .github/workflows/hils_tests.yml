@@ -1,0 +1,58 @@
+name: hils-tests
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Nightly regression (18:00 UTC = 03:00 JST)
+    - cron: '0 18 * * *'
+
+jobs:
+  build-unit-e2e:
+    runs-on: ubuntu-latest
+    container: ros:jazzy-ros-base
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src/ros2_hils_bridge
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            python3-pytest python3-serial python3-numpy python3-yaml \
+            ros-jazzy-sensor-msgs-py ros-jazzy-diagnostic-msgs \
+            ros-jazzy-nmea-navsat-driver socat
+
+      - name: Build
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon build --packages-up-to \
+            hils_bridge_base hils_bridge_gps_nmea0183 hils_bringup \
+            hils_bridge_lidar_velodyne_vlp16
+
+      - name: Unit tests
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          cd src/ros2_hils_bridge/hils_bridge_base
+          python3 -m pytest test -q
+
+      - name: GPS fault-injection E2E (real nmea_navsat_driver)
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          export E2E_REPORT_DIR=$GITHUB_WORKSPACE/e2e_reports
+          mkdir -p "$E2E_REPORT_DIR"
+          bash src/ros2_hils_bridge/tools/run_gps_e2e.sh
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hils-e2e-reports
+          path: e2e_reports/
+          if-no-files-found: ignore
