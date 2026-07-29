@@ -197,6 +197,17 @@ class LivoxEmulatorNode(UdpEmulatorBase):
             ParameterDescriptor(
                 description='Downsample mode: "uniform" (even spacing) or "near" (closest points first)'))
         self.declare_parameter('serial_number', '0TFDFH600100511')
+        self.declare_parameter('reboot_config_policy', 'preserve',
+            ParameterDescriptor(
+                description='Work mode across a reboot (docs 7.8). '
+                            '"preserve": like the real MID-360, the saved '
+                            'work mode is restored after boot and streaming '
+                            'resumes without host interaction. "reset": the '
+                            'work mode is lost and the driver must re-send '
+                            'WorkModeControl - note Livox SDK2 never '
+                            'reconfigures an already-known device, so with '
+                            '"reset" the stream stays down until the driver '
+                            'is restarted.'))
 
         self.add_on_set_parameters_callback(self._on_livox_param_change)
 
@@ -204,6 +215,7 @@ class LivoxEmulatorNode(UdpEmulatorBase):
 
         # State
         self._streaming = False
+        self._was_streaming = False
         self._frame_cnt = 0
         self._points_sent = 0
 
@@ -260,11 +272,32 @@ class LivoxEmulatorNode(UdpEmulatorBase):
     # ── Device state integration ──
 
     def _on_device_state_change(self, old_state, new_state):
-        if new_state in _WORK_MODE_RESET_STATES and self._streaming:
-            self._streaming = False
-            self.get_logger().info(
-                f'Work mode reset by state change {old_state} -> '
-                f'{new_state}; driver must re-enable work mode')
+        if new_state in _WORK_MODE_RESET_STATES:
+            if self._streaming:
+                self._was_streaming = True
+                self._streaming = False
+                self.get_logger().info(
+                    f'Work mode suspended by state change {old_state} -> '
+                    f'{new_state}')
+            return
+        if old_state == device_states.REBOOTING:
+            # Boot complete. The real MID-360 persists its work mode and
+            # resumes streaming on its own; Livox SDK2 never reconfigures
+            # a known device, so "preserve" is required for the driver to
+            # recover without a restart (docs 7.8, 22.4).
+            policy = self.get_parameter('reboot_config_policy').value
+            if policy == 'preserve' and self._was_streaming:
+                self._streaming = True
+                self._was_streaming = False
+                self.get_logger().info(
+                    'Boot complete: persisted work mode restored, '
+                    'streaming resumes')
+                self.device_state.set_state(device_states.STREAMING)
+            else:
+                self._was_streaming = False
+                self.get_logger().info(
+                    'Boot complete: work mode reset, waiting for '
+                    'WorkModeControl from the driver')
 
     # ── Livox SDK2 protocol handler ──
 
