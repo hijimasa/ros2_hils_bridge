@@ -23,6 +23,7 @@ if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_fault_injection test/test_fault_injection.py)
   ament_add_pytest_test(test_scenario test/test_scenario.py)
+  ament_add_pytest_test(test_device_state test/test_device_state.py)
 endif()
 
 ament_package()

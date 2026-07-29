@@ -1,0 +1,7 @@
+# Query the emulated device state.
+---
+string state
+float64 time_in_state_sec
+# YAML document with transition count and per-channel suppressed
+# packet counters.
+string detail_yaml

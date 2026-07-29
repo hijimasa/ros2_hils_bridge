@@ -39,6 +39,8 @@ class TrackedEvent:
                 info['fault_id'] = self.fault_id
         elif self.event.action == 'clear_fault':
             info['fault_id'] = self.event.fault_id
+        elif self.event.action == 'set_device_state':
+            info['state'] = self.event.state
         if self.result:
             info['result'] = self.result
         return info

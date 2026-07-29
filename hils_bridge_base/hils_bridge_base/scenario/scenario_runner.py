@@ -34,7 +34,7 @@ from rcl_interfaces.msg import ParameterDescriptor
 from std_srvs.srv import Trigger
 
 from hils_bridge_interfaces.srv import (
-    ClearFault, GetScenarioState, InjectFault, LoadScenario,
+    ClearFault, GetScenarioState, InjectFault, LoadScenario, SetDeviceState,
 )
 
 from hils_bridge_base.scenario.scenario_loader import (
@@ -103,6 +103,10 @@ class ScenarioRunnerNode(Node):
             InjectFault, f'{scenario.target}/inject_fault')
         self._clear_client = self.create_client(
             ClearFault, f'{scenario.target}/clear_fault')
+        self._state_client = self.create_client(
+            SetDeviceState, f'{scenario.target}/set_device_state')
+        self._needs_state_client = any(
+            e.action == 'set_device_state' for e in scenario.events)
         if scenario.expectations:
             self.get_logger().warning(
                 f'{len(scenario.expectations)} expectation(s) parsed but not '
@@ -143,9 +147,15 @@ class ScenarioRunnerNode(Node):
             f'Waiting for fault services of {self._scenario.target} ...')
         self._wait_timer = self.create_timer(0.2, self._check_target_ready)
 
+    def _target_ready(self) -> bool:
+        ready = (self._inject_client.service_is_ready()
+                 and self._clear_client.service_is_ready())
+        if self._needs_state_client:
+            ready = ready and self._state_client.service_is_ready()
+        return ready
+
     def _check_target_ready(self):
-        if self._inject_client.service_is_ready() and \
-                self._clear_client.service_is_ready():
+        if self._target_ready():
             self._cancel_wait_timer()
             self._start()
 
@@ -174,8 +184,7 @@ class ScenarioRunnerNode(Node):
             response.message = 'already running'
             return response
         self._cancel_wait_timer()
-        if not (self._inject_client.service_is_ready()
-                and self._clear_client.service_is_ready()):
+        if not self._target_ready():
             response.success = False
             response.message = \
                 f'fault services of {self._scenario.target} not available'
@@ -241,6 +250,10 @@ class ScenarioRunnerNode(Node):
             request = ClearFault.Request()
             request.fault_id = event.fault_id
             future = self._clear_client.call_async(request)
+        elif event.action == 'set_device_state':
+            request = SetDeviceState.Request()
+            request.state = event.state
+            future = self._state_client.call_async(request)
         else:  # clear_all_faults
             future = self._clear_client.call_async(ClearFault.Request())
 

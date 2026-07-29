@@ -36,6 +36,8 @@ from rclpy.node import Node
 from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
 
 from hils_bridge_base import network_utils
+from hils_bridge_base.device_state import DeviceStateMachine
+from hils_bridge_base.device_state import state as device_states
 from hils_bridge_base.fault_injection import DelayedSender, FaultPipeline
 
 
@@ -44,8 +46,11 @@ class UdpEmulatorBase(Node):
 
     def __init__(self, node_name: str, *,
                  default_device_ip: str = '192.168.1.12',
-                 default_host_ip: str = '192.168.1.5'):
+                 default_host_ip: str = '192.168.1.5',
+                 channel_policy: dict = None,
+                 default_reboot_target: str = device_states.STREAMING):
         super().__init__(node_name)
+        self._default_reboot_target = default_reboot_target
 
         # Parameters
         self.declare_parameter('device_ip', default_device_ip,
@@ -103,6 +108,19 @@ class UdpEmulatorBase(Node):
         self._send_count = 0
         self._udp_cnt = 0
 
+        # Device state machine (docs section 4.2). Initial state
+        # STREAMING keeps normal operation unchanged; scenarios move the
+        # device through power-off/reboot sequences via
+        # ~/set_device_state.
+        self.declare_parameter('initial_device_state',
+                               device_states.STREAMING,
+            ParameterDescriptor(
+                description='Device state at startup (docs section 4.2).'))
+        self._device_state = DeviceStateMachine(
+            self.get_parameter('initial_device_state').value,
+            channel_policy=channel_policy)
+        self._state_controller = None
+
         # Fault injection: with no active faults, send_udp() is a direct
         # sendto() and behavior is identical to the pre-fault-injection
         # implementation.
@@ -119,8 +137,13 @@ class UdpEmulatorBase(Node):
             try:
                 from hils_bridge_base.fault_injection.fault_controller \
                     import FaultInjectionController
+                from hils_bridge_base.device_state.state_controller \
+                    import DeviceStateController
                 self._fault_controller = FaultInjectionController(
                     self, self._fault_pipeline, self._delayed_sender)
+                self._state_controller = DeviceStateController(
+                    self, self._device_state,
+                    default_reboot_target=self._default_reboot_target)
             except ImportError as e:
                 self.get_logger().warning(
                     f'Fault injection services unavailable '
@@ -172,25 +195,33 @@ class UdpEmulatorBase(Node):
         """The fault injection pipeline applied by send_udp()."""
         return self._fault_pipeline
 
+    @property
+    def device_state(self) -> DeviceStateMachine:
+        """The device state machine gating send_udp()."""
+        return self._device_state
+
     def send_udp(self, sock: socket.socket, data: bytes, addr,
                  *, channel: str = 'data') -> bool:
-        """Send a UDP packet through the fault injection pipeline.
+        """Send a UDP packet through the state gate and fault pipeline.
 
-        With no active faults this is a plain sock.sendto(). Active
-        faults may drop the packet (returns True: the drop is
-        intentional), corrupt it, duplicate it, or defer it via the
-        delayed sender thread.
+        The device state machine may suppress the channel entirely
+        (e.g. power_off, rebooting; returns True: the silence is
+        intentional). With no active faults this is otherwise a plain
+        sock.sendto(). Active faults may drop the packet, corrupt it,
+        duplicate it, or defer it via the delayed sender thread.
 
         Args:
             sock: Socket to send on.
             data: UDP payload.
             addr: (host, port) destination.
-            channel: Logical stream name faults can target
-                     (e.g. 'data', 'position', 'imu').
+            channel: Logical stream name faults and device states can
+                     target (e.g. 'data', 'position', 'imu').
 
         Returns:
             True unless an immediate send failed with OSError.
         """
+        if not self._device_state.allows(channel):
+            return True
         for pkt in self._fault_pipeline.apply(bytes(data), channel):
             if pkt.delay_s <= 0.0:
                 try:

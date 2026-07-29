@@ -10,6 +10,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GetFaultState.srv"
   "srv/LoadScenario.srv"
   "srv/GetScenarioState.srv"
+  "srv/SetDeviceState.srv"
+  "srv/GetDeviceState.srv"
 )
 
 if(BUILD_TESTING)

@@ -4,10 +4,11 @@ Independent of rclpy so scenarios can be validated without a ROS 2
 environment. Invalid scenarios are rejected at load time, before any
 test starts (docs section 18).
 
-Phase 1 event actions:
+Event actions:
     inject_fault      - fault: {fault_type, target, parameters, ...}
     clear_fault       - fault_id: <id>
     clear_all_faults  - (no payload)
+    set_device_state  - state: <device state or "reboot">  (docs 10.1)
 
 `expectations` blocks are parsed and preserved for the Phase 6 test
 oracle but are not evaluated yet.
@@ -18,12 +19,14 @@ from typing import List, Optional
 
 import yaml
 
+from hils_bridge_base.device_state import state as device_states
 from hils_bridge_base.fault_injection import create_fault
 from hils_bridge_base.fault_injection.fault_base import FaultSpecError
 
-ACTIONS = ('inject_fault', 'clear_fault', 'clear_all_faults')
+ACTIONS = ('inject_fault', 'clear_fault', 'clear_all_faults',
+           'set_device_state')
 
-_EVENT_KEYS = ('at_sec', 'action', 'fault', 'fault_id')
+_EVENT_KEYS = ('at_sec', 'action', 'fault', 'fault_id', 'state')
 _HEADER_KEYS = ('id', 'description', 'target', 'seed')
 _TOP_KEYS = ('scenario', 'events', 'expectations')
 
@@ -42,6 +45,7 @@ class ScenarioEvent:
     action: str
     fault: Optional[dict] = None      # inject_fault
     fault_id: Optional[str] = None    # clear_fault
+    state: Optional[str] = None       # set_device_state
 
 
 @dataclass
@@ -144,6 +148,7 @@ def _parse_event(index: int, raw, scenario_seed: int) -> ScenarioEvent:
 
     fault = None
     fault_id = None
+    state = None
     if action == 'inject_fault':
         fault = raw.get('fault')
         if not isinstance(fault, dict):
@@ -156,9 +161,15 @@ def _parse_event(index: int, raw, scenario_seed: int) -> ScenarioEvent:
         fault_id = raw.get('fault_id')
         if not isinstance(fault_id, str) or not fault_id:
             raise ScenarioError(f'{where}.fault_id must be a non-empty string')
+    elif action == 'set_device_state':
+        state = raw.get('state')
+        valid = device_states.ALL_STATES + (device_states.REBOOT_REQUEST,)
+        if state not in valid:
+            raise ScenarioError(
+                f'{where}.state must be one of {list(valid)}, got {state!r}')
 
     return ScenarioEvent(index=index, at_sec=float(at_sec), action=action,
-                         fault=fault, fault_id=fault_id)
+                         fault=fault, fault_id=fault_id, state=state)
 
 
 def _validate_fault_spec(spec: dict, where: str) -> None:

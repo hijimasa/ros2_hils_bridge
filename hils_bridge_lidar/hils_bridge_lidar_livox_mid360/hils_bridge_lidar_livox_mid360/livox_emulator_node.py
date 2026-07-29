@@ -35,7 +35,18 @@ from rcl_interfaces.msg import ParameterDescriptor, IntegerRange, SetParametersR
 from sensor_msgs.msg import PointCloud2, Imu
 from sensor_msgs_py import point_cloud2
 
+from hils_bridge_base.device_state import state as device_states
 from hils_bridge_base.udp_emulator_base import UdpEmulatorBase
+
+# States in which the lidar has lost its work mode: after any of these
+# the driver must send WorkModeControl again before streaming resumes
+# (docs section 7.8: reboot requires reconfiguration by the driver).
+_WORK_MODE_RESET_STATES = (
+    device_states.POWER_OFF,
+    device_states.BOOTING,
+    device_states.REBOOTING,
+    device_states.INTERNAL_ERROR,
+)
 
 # ── Livox SDK2 constants ──
 
@@ -163,7 +174,11 @@ class LivoxEmulatorNode(UdpEmulatorBase):
             node_name='hils_livox_emulator',
             default_device_ip='192.168.1.12',
             default_host_ip='192.168.1.5',
+            # After a reboot the device is discoverable but not
+            # streaming: the driver must re-send WorkModeControl.
+            default_reboot_target=device_states.DISCOVERABLE,
         )
+        self.device_state.add_listener(self._on_device_state_change)
 
         # Parameters (device_ip, host_ip, network_interface and max_hz
         # are declared by UdpEmulatorBase)
@@ -242,6 +257,15 @@ class LivoxEmulatorNode(UdpEmulatorBase):
                 self.get_logger().info(f'{param.name} changed to {param.value}')
         return SetParametersResult(successful=True)
 
+    # ── Device state integration ──
+
+    def _on_device_state_change(self, old_state, new_state):
+        if new_state in _WORK_MODE_RESET_STATES and self._streaming:
+            self._streaming = False
+            self.get_logger().info(
+                f'Work mode reset by state change {old_state} -> '
+                f'{new_state}; driver must re-enable work mode')
+
     # ── Livox SDK2 protocol handler ──
 
     def _protocol_loop(self):
@@ -255,6 +279,9 @@ class LivoxEmulatorNode(UdpEmulatorBase):
         try:
             data, addr = self._sock_discovery.recvfrom(512)
         except BlockingIOError:
+            return
+        # A powered-off / rebooting device does not parse requests.
+        if not self.device_state.is_open('discovery'):
             return
         if len(data) < 24 or data[0] != LIVOX_SOF:
             return
@@ -286,6 +313,9 @@ class LivoxEmulatorNode(UdpEmulatorBase):
             data, addr = self._sock_cmd.recvfrom(512)
         except BlockingIOError:
             return
+        # A powered-off / rebooting device does not parse requests.
+        if not self.device_state.is_open('command'):
+            return
         if len(data) < 24 or data[0] != LIVOX_SOF:
             return
         cmd_id = struct.unpack_from('<H', data, 8)[0]
@@ -300,6 +330,11 @@ class LivoxEmulatorNode(UdpEmulatorBase):
                 self._streaming = (mode == LIVOX_WORK_MODE_NORMAL)
                 self.get_logger().info(
                     f'WorkMode={mode}, streaming={self._streaming}')
+                # Reflect the work mode in the device state so the data
+                # and imu channels open/close accordingly.
+                self.device_state.set_state(
+                    device_states.STREAMING if self._streaming
+                    else device_states.READY)
             resp = _build_sdk2_packet(cmd_id, 1, seq_num, b'\x00')
 
         elif cmd_id == LIVOX_CMD_GET_INTERNAL_INFO:

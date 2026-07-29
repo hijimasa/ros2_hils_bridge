@@ -1,0 +1,11 @@
+# Request a device state transition (docs sections 4.2, 11).
+# Valid states: power_off, booting, discoverable, configuring, ready,
+# streaming, degraded, communication_fault, configuration_fault,
+# internal_error, rebooting.
+# The pseudo-state "reboot" enters rebooting and automatically
+# transitions to the node's reboot_target_state after boot_duration_sec.
+string state
+---
+bool success
+string message
+string previous_state

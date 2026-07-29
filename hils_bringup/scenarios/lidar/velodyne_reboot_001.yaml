@@ -1,0 +1,29 @@
+# Device reboot test (docs sections 7.8, 8.1): the emulator goes
+# through power_off -> reboot -> boot -> streaming. All output stops at
+# power_off; after the reboot completes (boot_duration_sec parameter of
+# the emulator, default 2 s) the stream resumes.
+# Expected driver behavior: topic stops, diagnostics degrade, topic
+# resumes after recovery without a driver restart.
+scenario:
+  id: velodyne_reboot_001
+  description: VLP-16 power off then reboot to streaming
+  target: /hils_velodyne_emulator
+  seed: 4001
+
+events:
+  - at_sec: 10.0
+    action: set_device_state
+    state: power_off
+
+  - at_sec: 15.0
+    action: set_device_state
+    state: reboot
+
+expectations:
+  - type: topic_timeout
+    topic: /velodyne_points
+    within_sec: 2.0
+  - type: topic_resume
+    topic: /velodyne_points
+    within_sec: 10.0
+    after_event_sec: 15.0
