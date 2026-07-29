@@ -1,0 +1,25 @@
+# Delay/jitter test (docs section 7.2): data stream delayed by
+# 100 ms +/- 30 ms for 20 s while position packets stay on time.
+scenario:
+  id: velodyne_delay_jitter_001
+  description: VLP-16 data stream delay with uniform jitter
+  target: /hils_velodyne_emulator
+  seed: 2001
+
+events:
+  - at_sec: 10.0
+    action: inject_fault
+    fault:
+      fault_id: stream_delay
+      fault_type: delay
+      target: data
+      duration_sec: 20.0
+      parameters:
+        delay_ms: 100
+        jitter_ms: 30
+        distribution: uniform
+
+expectations:
+  - type: maximum_message_age
+    topic: /velodyne_points
+    threshold_ms: 200

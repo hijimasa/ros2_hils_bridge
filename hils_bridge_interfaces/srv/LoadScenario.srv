@@ -1,0 +1,9 @@
+# Load a fault scenario. Exactly one of the two fields must be set:
+#   scenario_path: path to a YAML scenario file on the runner's host
+#   scenario_yaml: inline YAML scenario document
+string scenario_path
+string scenario_yaml
+---
+bool success
+string message
+string scenario_id

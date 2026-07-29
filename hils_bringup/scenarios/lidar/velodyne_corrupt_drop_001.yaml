@@ -1,0 +1,42 @@
+# Combined corruption + loss test (docs sections 7.3, 7.5):
+# 20% packet loss and bit flips on the data stream, cleared explicitly.
+# Expected driver behavior: no crash, degraded but non-garbage output,
+# full recovery after clear.
+scenario:
+  id: velodyne_corrupt_drop_001
+  description: VLP-16 packet loss and byte corruption on the data stream
+  target: /hils_velodyne_emulator
+  seed: 3001
+
+events:
+  - at_sec: 10.0
+    action: inject_fault
+    fault:
+      fault_id: stream_loss
+      fault_type: drop
+      target: data
+      parameters:
+        probability: 0.2
+
+  - at_sec: 15.0
+    action: inject_fault
+    fault:
+      fault_id: stream_corruption
+      fault_type: corrupt
+      target: data
+      parameters:
+        probability: 0.3
+        mode: bit_flip
+        num_bytes: 4
+
+  - at_sec: 35.0
+    action: clear_fault
+    fault_id: stream_corruption
+
+  - at_sec: 40.0
+    action: clear_all_faults
+
+expectations:
+  - type: process_alive
+    node: velodyne_driver_node
+    expected: true

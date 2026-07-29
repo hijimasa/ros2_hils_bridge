@@ -1,0 +1,28 @@
+# Logical power-loss test (docs section 8.1 level 1):
+# the emulator mutes all output for 10 s, then output resumes.
+# Expected driver behavior: /velodyne_points stops, diagnostics degrade,
+# topic resumes after recovery.
+scenario:
+  id: velodyne_power_loss_001
+  description: VLP-16 logical power loss during streaming, then recovery
+  target: /hils_velodyne_emulator
+  seed: 1001
+
+events:
+  - at_sec: 10.0
+    action: inject_fault
+    fault:
+      fault_id: power_loss
+      fault_type: drop
+      duration_sec: 10.0
+      parameters:
+        probability: 1.0
+
+expectations:
+  - type: topic_timeout
+    topic: /velodyne_points
+    within_sec: 2.0
+  - type: topic_resume
+    topic: /velodyne_points
+    within_sec: 5.0
+    after_event_sec: 20.0

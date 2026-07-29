@@ -1,0 +1,5 @@
+# Query scenario runner state.
+---
+# YAML document: scenario id, phase (idle/loaded/running/finished/stopped),
+# elapsed time and per-event planned/actual times and results.
+string state_yaml

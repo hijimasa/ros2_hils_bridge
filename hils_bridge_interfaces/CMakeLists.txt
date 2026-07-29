@@ -8,6 +8,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/InjectFault.srv"
   "srv/ClearFault.srv"
   "srv/GetFaultState.srv"
+  "srv/LoadScenario.srv"
+  "srv/GetScenarioState.srv"
 )
 
 if(BUILD_TESTING)
