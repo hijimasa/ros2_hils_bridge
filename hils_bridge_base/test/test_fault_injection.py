@@ -11,7 +11,8 @@ import pytest
 from hils_bridge_base.fault_injection import (
     CorruptionFault, DelayedSender, DelayFault, DropFault, DuplicateFault,
     FaultPipeline, FaultSpecError, FreezeFault, HttpStatusFault,
-    ReorderFault, create_fault,
+    NmeaChecksumFault, ReorderFault, Wt901ChecksumFault, create_fault,
+    register_fault_class,
 )
 
 PKT = bytes(range(256)) * 4  # 1024-byte test packet
@@ -214,6 +215,61 @@ def test_faults_for_filters_by_channel():
     pipeline.add_fault(DelayFault('t1'))  # all channels
     ids = [f.fault_id for f in pipeline.faults_for('http')]
     assert ids == ['h1', 't1']
+
+
+# -- protocol faults --
+
+NMEA = (b'$GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,'
+        b'46.9,M,,*47\r\n'
+        b'$GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,'
+        b'003.1,W*6A\r\n')
+
+
+def test_nmea_checksum_invalidated_only():
+    pipeline = FaultPipeline()
+    pipeline.add_fault(NmeaChecksumFault('n1'))
+    out = pipeline.apply(NMEA, 'serial')[0].data
+    assert out != NMEA
+    assert len(out) == len(NMEA)
+    assert b'*48' in out and b'*6B' in out  # each checksum +1
+    # Everything except the checksum hex digits is untouched.
+    assert out.replace(b'*48', b'*47').replace(b'*6B', b'*6A') == NMEA
+
+
+def test_nmea_checksum_zero_probability_passthrough():
+    fault = NmeaChecksumFault('n1', parameters={'probability': 0.0})
+    out = fault.process([_scheduled(NMEA)], 'serial')[0].data
+    assert out == NMEA
+
+
+def _wt901_frame(ptype):
+    body = bytes([0x55, ptype] + list(range(8)))
+    return body + bytes([sum(body) & 0xFF])
+
+
+def test_wt901_checksum_corrupts_each_frame():
+    payload = (_wt901_frame(0x51) + _wt901_frame(0x52)
+               + _wt901_frame(0x53) + _wt901_frame(0x59))
+    fault = Wt901ChecksumFault('w1')
+    out = fault.process([_scheduled(payload)], 'serial')[0].data
+    assert len(out) == len(payload)
+    for i in range(4):
+        frame_in = payload[i * 11:(i + 1) * 11]
+        frame_out = out[i * 11:(i + 1) * 11]
+        assert frame_out[:10] == frame_in[:10]        # data intact
+        assert frame_out[10] == (frame_in[10] + 1) % 256  # checksum bad
+
+
+def test_register_fault_class():
+    class MyFault(DropFault):
+        fault_type = 'my_device_fault'
+
+    register_fault_class(MyFault)
+    fault = create_fault('my_device_fault', 'x1',
+                         parameters={'probability': 1.0})
+    assert isinstance(fault, MyFault)
+    with pytest.raises(TypeError):
+        register_fault_class(dict)
 
 
 # -- reproducibility (docs section 17.1) --

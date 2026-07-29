@@ -1,0 +1,32 @@
+# NMEA checksum fault test (docs sections 7.5, 10.3): sentences stay
+# well-formed but carry an invalid checksum for 10 s.
+# Expected driver behavior: invalid sentences are rejected (no /fix
+# published from them), the driver does not crash, and /fix resumes
+# after the fault clears.
+scenario:
+  id: gps_checksum_error_001
+  description: NMEA 0183 checksum invalidation during streaming
+  target: /hils_gps_bridge
+  seed: 7001
+
+events:
+  - at_sec: 10.0
+    action: inject_fault
+    fault:
+      fault_id: bad_checksum
+      fault_type: nmea_checksum
+      duration_sec: 10.0
+      parameters:
+        probability: 1.0
+
+expectations:
+  - type: topic_timeout
+    topic: /fix
+    within_sec: 3.0
+  - type: topic_resume
+    topic: /fix
+    within_sec: 5.0
+    after_event_sec: 20.0
+  - type: process_alive
+    node: nmea
+    expected: true

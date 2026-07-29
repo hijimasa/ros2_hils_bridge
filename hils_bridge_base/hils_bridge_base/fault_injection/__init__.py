@@ -12,6 +12,7 @@ rclpy-independent core:
   freeze_fault      - stale data: repeat first captured packet
   reorder_fault     - grouped shuffle/reverse reordering
   http_status_fault - HTTP status code override (sampled by HTTP emulators)
+  protocol_faults   - field-aware faults (nmea_checksum, wt901_checksum)
 
 ROS 2 integration (imported separately to keep the core testable
 without ROS):
@@ -30,12 +31,29 @@ from .duplicate_fault import DuplicateFault
 from .freeze_fault import FreezeFault
 from .reorder_fault import ReorderFault
 from .http_status_fault import HttpStatusFault
+from .protocol_faults import NmeaChecksumFault, Wt901ChecksumFault
 
 FAULT_CLASSES = {
     cls.fault_type: cls
     for cls in (DelayFault, DropFault, CorruptionFault, DuplicateFault,
-                FreezeFault, ReorderFault, HttpStatusFault)
+                FreezeFault, ReorderFault, HttpStatusFault,
+                NmeaChecksumFault, Wt901ChecksumFault)
 }
+
+
+def register_fault_class(cls) -> None:
+    """Register a device-specific Fault subclass at runtime.
+
+    Device packages may ship their own protocol faults and register
+    them before their emulator node starts. Note the scenario runner
+    process validates fault specs too - faults referenced from
+    scenarios must be importable there as well, which is why common
+    public-protocol faults live in this package.
+    """
+    if not issubclass(cls, Fault) or not cls.fault_type:
+        raise TypeError('register_fault_class expects a Fault subclass '
+                        'with a fault_type')
+    FAULT_CLASSES[cls.fault_type] = cls
 
 
 def create_fault(fault_type: str, fault_id: str, *,
@@ -61,5 +79,6 @@ __all__ = [
     'FaultPipeline', 'DelayedSender',
     'DelayFault', 'DropFault', 'CorruptionFault', 'DuplicateFault',
     'FreezeFault', 'ReorderFault', 'HttpStatusFault',
-    'FAULT_CLASSES', 'create_fault',
+    'NmeaChecksumFault', 'Wt901ChecksumFault',
+    'FAULT_CLASSES', 'create_fault', 'register_fault_class',
 ]
