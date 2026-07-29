@@ -1,0 +1,20 @@
+/**:
+  ros__parameters:
+    # USB CDC port of the RP2040 running rp2040_encoder_quadrature
+    serial_port: "/dev/ttyACM0"
+    baudrate: 115200
+
+    # Maximum command rate (Hz)
+    max_hz: 10.0
+
+    # JointState topic from the simulator
+    joint_state_topic: "/joint_states"
+
+    # Number of encoder channels driven by the firmware (1-2)
+    encoder_channels: 2
+
+    # Encoder counts per revolution
+    encoder_cpr: 1000
+
+    # Ordered joint names mapped to channels; empty string = positional
+    joint_names: [""]
