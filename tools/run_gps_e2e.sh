@@ -12,6 +12,13 @@
 # Exit code: the oracle's verdict (0 = all expectations pass).
 set -u
 
+# CI containers (e.g. GitHub Actions) often have no working multicast,
+# which breaks default DDS participant discovery. LOCALHOST restricts
+# discovery to unicast localhost peers and works everywhere this
+# single-machine test runs. The ROS setup files preset SUBNET, so this
+# must be forced, not defaulted; override via E2E_DISCOVERY_RANGE.
+export ROS_AUTOMATIC_DISCOVERY_RANGE="${E2E_DISCOVERY_RANGE:-LOCALHOST}"
+
 WORK=$(mktemp -d)
 OBSERVE_DOMAIN="${ROS_DOMAIN_ID:-0}"
 SCENARIO="$(ros2 pkg prefix hils_bringup)/share/hils_bringup/scenarios/gps/gps_checksum_error_001.yaml"
@@ -25,7 +32,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "[e2e] workdir: $WORK (domain $OBSERVE_DOMAIN)"
+dump_logs() {
+    echo '[e2e] ---- component logs ----'
+    for f in socat fix_pub gps_bridge nmea_driver oracle runner; do
+        if [ -f "$WORK/$f.log" ]; then
+            echo "[e2e] == $f.log =="
+            tail -n 30 "$WORK/$f.log"
+        fi
+    done
+}
+
+echo "[e2e] workdir: $WORK (domain $OBSERVE_DOMAIN," \
+     "rmw ${RMW_IMPLEMENTATION:-default}," \
+     "discovery $ROS_AUTOMATIC_DISCOVERY_RANGE)"
 
 # 1. Virtual serial pair
 socat -d pty,raw,echo=0,link="$WORK/ttyBRIDGE" \
@@ -71,16 +90,30 @@ ros2 run nmea_navsat_driver nmea_serial_driver --ros-args \
     > "$WORK/nmea_driver.log" 2>&1 &
 PIDS+=($!)
 
-# Wait until the real driver republishes /fix
-for _ in $(seq 60); do
-    if timeout 2 ros2 topic echo --once /fix > /dev/null 2>&1; then
-        break
-    fi
-    sleep 1
-done
-timeout 2 ros2 topic echo --once /fix > /dev/null 2>&1 || {
-    echo '[e2e] /fix never appeared; driver logs:'
-    tail -20 "$WORK/nmea_driver.log" "$WORK/gps_bridge.log"
+# Wait until the real driver republishes /fix. Probe with a direct
+# rclpy subscription: ros2cli's echo depends on the daemon for type
+# resolution, which is unreliable in CI containers.
+python3 - <<'EOF' || {
+import sys
+import time
+
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import NavSatFix
+
+rclpy.init()
+node = Node('hils_e2e_probe')
+got = []
+node.create_subscription(NavSatFix, '/fix', lambda _m: got.append(1), 10)
+end = time.monotonic() + 60.0
+while time.monotonic() < end and not got:
+    rclpy.spin_once(node, timeout_sec=0.5)
+node.destroy_node()
+rclpy.shutdown()
+sys.exit(0 if got else 1)
+EOF
+    echo '[e2e] FAIL: /fix never appeared within 60s'
+    dump_logs
     exit 2
 }
 echo '[e2e] normal path up, starting oracle + runner'
@@ -103,6 +136,7 @@ CODE=$?
 
 echo '[e2e] oracle verdicts:'
 grep -aE '\[oracle\]' "$WORK/oracle.log" || cat "$WORK/oracle.log"
+[ "$CODE" -eq 0 ] || dump_logs
 cp -r "$WORK/reports" "${E2E_REPORT_DIR:-$WORK}" 2>/dev/null || true
 echo "[e2e] reports: ${E2E_REPORT_DIR:-$WORK/reports}"
 echo "[e2e] exit: $CODE"
