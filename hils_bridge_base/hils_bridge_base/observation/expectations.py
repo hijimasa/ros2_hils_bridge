@@ -30,6 +30,20 @@ Supported expectation types (scenario YAML `expectations:` entries):
        footprint of a dead process; a hung process keeps its node alive
        but trips topic expectations instead)
 
+    - type: maximum_message_age  # header.stamp vs arrival time
+      topic: /imu/data
+      threshold_ms: 200
+      from_sec: 0.0              # optional evaluation window
+      to_sec: null
+      NOTE: meaningless when the simulation source replays old
+      timestamps (e.g. rosbag) - use only with live simulation clocks.
+
+    - type: diagnostic_level     # /diagnostics reaches a level
+      node: livox_ros_driver2    # substring match on status name/hw id
+      expected: error            # warn | error | stale | warn_or_error
+      within_sec: 3.0
+      after_event_sec: 10.0
+
 Unknown types are reported as SKIPPED, never as failures, so scenario
 files may carry expectations for oracle features that ship later.
 """
@@ -43,7 +57,12 @@ SKIP = 'skip'
 ERROR = 'error'
 
 SUPPORTED_TYPES = ('topic_timeout', 'topic_resume', 'topic_alive',
-                   'node_alive', 'process_alive')
+                   'node_alive', 'process_alive',
+                   'maximum_message_age', 'diagnostic_level')
+
+# diagnostic_msgs/DiagnosticStatus levels
+_DIAG_LEVELS = {'ok': 0, 'warn': 1, 'warn_or_error': 1, 'error': 2,
+                'stale': 3}
 
 
 @dataclass
@@ -151,9 +170,61 @@ def eval_node_alive(exp: dict, node_names: List[str]) -> tuple:
                      if alive else 'not found in graph'))
 
 
+def eval_max_message_age(exp: dict, ages: List[tuple], t_start: float,
+                         t_end: float) -> tuple:
+    """ages: [(scenario_time, age_sec), ...] per received message."""
+    threshold = _num(exp, 'threshold_ms', None)
+    if threshold is None:
+        raise ValueError('threshold_ms is required')
+    lo = _num(exp, 'from_sec', t_start)
+    hi = _num(exp, 'to_sec', None)
+    hi = t_end if hi is None else hi
+    window = [(t, age) for t, age in ages if lo <= t <= hi]
+    if not window:
+        return FAIL, f'no stamped messages in window [{lo:.2f}, {hi:.2f}]s'
+    worst_t, worst = max(window, key=lambda p: p[1])
+    if worst * 1000.0 <= threshold:
+        return PASS, (f'{len(window)} messages, max age '
+                      f'{worst * 1000.0:.1f}ms (limit {threshold}ms)')
+    return FAIL, (f'age {worst * 1000.0:.1f}ms at t={worst_t:.2f}s '
+                  f'exceeds limit {threshold}ms')
+
+
+def eval_diagnostic_level(exp: dict, diagnostics: List[tuple], ref: float,
+                          t_end: float) -> tuple:
+    """diagnostics: [(scenario_time, status_name, level), ...]."""
+    expected = exp.get('expected')
+    if expected not in _DIAG_LEVELS or expected == 'ok':
+        raise ValueError(
+            f'expected must be one of warn, error, stale, warn_or_error; '
+            f'got {expected!r}')
+    threshold = _DIAG_LEVELS[expected]
+    needle = exp.get('node') or exp.get('name') or ''
+    if not isinstance(needle, str):
+        raise ValueError('node must be a string')
+    within = _num(exp, 'within_sec', t_end - ref)
+    matched = [(t, name, level) for t, name, level in diagnostics
+               if needle in name]
+    if not matched:
+        return FAIL, (f'no diagnostic status matching {needle!r} observed'
+                      if needle else 'no diagnostics observed')
+    hits = [(t, name, level) for t, name, level in matched
+            if ref <= t <= ref + within and level >= threshold]
+    if hits:
+        t, name, level = min(hits, key=lambda h: h[0])
+        return PASS, (f'{name!r} reached level {level} at t={t:.2f}s '
+                      f'({t - ref:.2f}s after reference, limit {within}s)')
+    worst = max(level for _, _, level in matched)
+    return FAIL, (f'no matching status reached level >= {threshold} in '
+                  f'[{ref:.2f}, {ref + within:.2f}]s '
+                  f'(worst observed level {worst})')
+
+
 def evaluate(expectations: List[dict], *, arrivals_by_topic: dict,
              node_names: List[str], default_ref: float,
-             t_start: float, t_end: float) -> List[Verdict]:
+             t_start: float, t_end: float,
+             ages_by_topic: dict = None,
+             diagnostics: List[tuple] = None) -> List[Verdict]:
     """Evaluate all expectations against recorded observations.
 
     Args:
@@ -186,6 +257,17 @@ def evaluate(expectations: List[dict], *, arrivals_by_topic: dict,
                         exp, arrivals, t_start, t_end)
             elif exp_type in ('node_alive', 'process_alive'):
                 status, detail = eval_node_alive(exp, node_names)
+            elif exp_type == 'maximum_message_age':
+                topic = exp.get('topic')
+                if not isinstance(topic, str) or not topic:
+                    raise ValueError('topic must be a non-empty string')
+                ages = (ages_by_topic or {}).get(topic, [])
+                status, detail = eval_max_message_age(
+                    exp, ages, t_start, t_end)
+            elif exp_type == 'diagnostic_level':
+                ref = _num(exp, 'after_event_sec', default_ref)
+                status, detail = eval_diagnostic_level(
+                    exp, diagnostics or [], ref, t_end)
             elif exp_type is None:
                 status, detail = ERROR, 'expectation has no "type" key'
             else:

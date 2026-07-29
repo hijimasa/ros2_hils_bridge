@@ -30,12 +30,14 @@ INTERRUPTED = stream(0.0, 10.0) + stream(20.0, 30.0)
 
 
 def run_one(exp, arrivals=None, node_names=(), default_ref=10.0,
-            t_end=30.0):
+            t_end=30.0, ages=None, diagnostics=None):
     verdicts = evaluate(
         [exp],
         arrivals_by_topic={'/scan': list(arrivals or [])},
         node_names=list(node_names),
-        default_ref=default_ref, t_start=0.0, t_end=t_end)
+        default_ref=default_ref, t_start=0.0, t_end=t_end,
+        ages_by_topic={'/scan': list(ages or [])},
+        diagnostics=list(diagnostics or []))
     return verdicts[0]
 
 
@@ -138,10 +140,85 @@ def test_node_alive_expected_false():
     assert v.status == PASS
 
 
+# -- maximum_message_age --
+
+def test_max_age_pass():
+    ages = [(t, 0.05) for t in stream(0, 30, hz=2)]
+    v = run_one({'type': 'maximum_message_age', 'topic': '/scan',
+                 'threshold_ms': 200}, ages=ages)
+    assert v.status == PASS
+
+
+def test_max_age_fail_reports_worst():
+    ages = [(t, 0.05) for t in stream(0, 30, hz=2)] + [(12.0, 0.35)]
+    v = run_one({'type': 'maximum_message_age', 'topic': '/scan',
+                 'threshold_ms': 200}, ages=ages)
+    assert v.status == FAIL
+    assert '350.0ms' in v.detail
+
+
+def test_max_age_window():
+    ages = [(5.0, 0.5), (25.0, 0.05)]
+    v = run_one({'type': 'maximum_message_age', 'topic': '/scan',
+                 'threshold_ms': 200, 'from_sec': 20.0}, ages=ages)
+    assert v.status == PASS
+
+
+def test_max_age_requires_threshold():
+    v = run_one({'type': 'maximum_message_age', 'topic': '/scan'},
+                ages=[(1.0, 0.01)])
+    assert v.status == ERROR
+
+
+# -- diagnostic_level --
+
+DIAG = [
+    (5.0, 'livox_ros_driver2: lidar status|mid360', 0),
+    (11.5, 'livox_ros_driver2: lidar status|mid360', 2),
+    (12.0, 'other_node: temp|x', 1),
+]
+
+
+def test_diag_level_pass():
+    v = run_one({'type': 'diagnostic_level', 'node': 'livox_ros_driver2',
+                 'expected': 'error', 'within_sec': 3.0},
+                diagnostics=DIAG)  # default_ref=10.0
+    assert v.status == PASS
+    assert '11.50' in v.detail
+
+
+def test_diag_level_fail_too_late():
+    v = run_one({'type': 'diagnostic_level', 'node': 'livox_ros_driver2',
+                 'expected': 'error', 'within_sec': 1.0},
+                diagnostics=DIAG)
+    assert v.status == FAIL
+
+
+def test_diag_level_warn_or_error_matches_error():
+    v = run_one({'type': 'diagnostic_level', 'node': 'livox',
+                 'expected': 'warn_or_error', 'within_sec': 3.0},
+                diagnostics=DIAG)
+    assert v.status == PASS
+
+
+def test_diag_level_no_matching_status():
+    v = run_one({'type': 'diagnostic_level', 'node': 'velodyne',
+                 'expected': 'error'}, diagnostics=DIAG)
+    assert v.status == FAIL
+    assert 'no diagnostic status' in v.detail
+
+
+def test_diag_level_bad_expected():
+    v = run_one({'type': 'diagnostic_level', 'node': 'livox',
+                 'expected': 'catastrophic'}, diagnostics=DIAG)
+    assert v.status == ERROR
+
+
 # -- robustness --
 
 def test_unknown_type_skipped_not_failed():
-    v = run_one({'type': 'diagnostic_level', 'expected': 'error'})
+    v = run_one({'type': 'invalid_message_not_published',
+                 'topic': '/fix'})
     assert v.status == SKIP
     assert v.passed
 
@@ -166,7 +243,7 @@ def make_report(tmp_path):
           'after_event_sec': 18.0},
          {'type': 'topic_resume', 'topic': '/scan', 'within_sec': 1.0,
           'after_event_sec': 10.0},
-         {'type': 'diagnostic_level'}],
+         {'type': 'invalid_message_not_published', 'topic': '/fix'}],
         arrivals_by_topic={'/scan': INTERRUPTED},
         node_names=[], default_ref=10.0, t_start=0.0, t_end=30.0)
     return build_report(

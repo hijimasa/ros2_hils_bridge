@@ -79,12 +79,19 @@ class ScenarioOracle(Node):
 
         # Observation context in the robot domain (read-only).
         observe_domain = self.get_parameter('observe_domain_id').value
+        exps = [e for e in self.scenario.expectations if isinstance(e, dict)]
         topics = sorted({
-            e['topic'] for e in self.scenario.expectations
-            if isinstance(e, dict) and isinstance(e.get('topic'), str)})
+            e['topic'] for e in exps if isinstance(e.get('topic'), str)})
+        age_topics = sorted({
+            e['topic'] for e in exps
+            if e.get('type') == 'maximum_message_age'
+            and isinstance(e.get('topic'), str)})
+        watch_diag = any(e.get('type') == 'diagnostic_level' for e in exps)
         self._obs_context = rclpy.Context()
         rclpy.init(context=self._obs_context, domain_id=observe_domain)
-        self._recorder = TopicRecorder(topics, context=self._obs_context)
+        self._recorder = TopicRecorder(
+            topics, context=self._obs_context, age_topics=age_topics,
+            watch_diagnostics=watch_diag)
         self._obs_executor = SingleThreadedExecutor(
             context=self._obs_context)
         self._obs_executor.add_node(self._recorder)
@@ -183,6 +190,13 @@ class ScenarioOracle(Node):
         arrivals_rel = {
             topic: [round(t - start, 3) for t in times]
             for topic, times in self._recorder.arrivals().items()}
+        ages_rel = {
+            topic: [(round(t - start, 3), round(age, 4))
+                    for t, age in entries]
+            for topic, entries in self._recorder.ages().items()}
+        diagnostics_rel = [
+            (round(t - start, 3), name, level)
+            for t, name, level in self._recorder.diagnostics()]
         node_names = self._recorder.node_names()
 
         verdicts = evaluate(
@@ -190,13 +204,16 @@ class ScenarioOracle(Node):
             arrivals_by_topic=arrivals_rel,
             node_names=node_names,
             default_ref=self._default_ref(),
-            t_start=0.0, t_end=t_end)
+            t_start=0.0, t_end=t_end,
+            ages_by_topic=ages_rel,
+            diagnostics=diagnostics_rel)
 
         observations = {
             'window_sec': round(t_end, 3),
             'arrival_counts': {t: len(v) for t, v in arrivals_rel.items()},
             'unresolved_topics': self._recorder.unresolved_topics(),
             'node_names': node_names,
+            'diagnostic_records': len(diagnostics_rel),
             'runner_events': self._runner_events,
             'timed_out': timed_out,
         }
