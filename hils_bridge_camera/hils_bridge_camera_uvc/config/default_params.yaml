@@ -3,4 +3,4 @@ hils_uvc_bridge:
     serial_port: "/dev/ttyACM0"
     jpeg_quality: 50
     image_topic: "/image_raw"
-    max_fps: 15.0
+    max_hz: 15.0

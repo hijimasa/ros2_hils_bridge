@@ -22,44 +22,36 @@ import time
 import threading
 
 import rclpy
-from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rcl_interfaces.msg import ParameterDescriptor, IntegerRange, SetParametersResult
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 
 from hils_bridge_base import frame_protocol
+from hils_bridge_base.serial_bridge_base import SerialBridgeBase
 
 
-class UvcBridgeNode(Node):
+class UvcBridgeNode(SerialBridgeBase):
     def __init__(self):
-        super().__init__('hils_uvc_bridge')
+        # serial_port, baudrate (ignored by USB CDC), max_hz and the fault
+        # injection services come from SerialBridgeBase.
+        super().__init__(
+            'hils_uvc_bridge',
+            default_serial_port='/dev/ttyACM0',
+            default_max_hz=15.0,
+        )
 
         # Parameters with descriptors for discoverability
-        self.declare_parameter('serial_port', '/dev/ttyACM0')
         self.declare_parameter('jpeg_quality', 50,
             ParameterDescriptor(
                 description='JPEG encoding quality (1-100). Higher = better quality, larger frames.',
                 integer_range=[IntegerRange(from_value=1, to_value=100, step=1)]))
         self.declare_parameter('image_topic', '/image_raw')
-        self.declare_parameter('max_fps', 15.0)
         self.declare_parameter('frame_width', 640)
         self.declare_parameter('frame_height', 480)
 
         # Parameter change callback
-        self.add_on_set_parameters_callback(self._on_param_change)
-
-        # Open serial port to Pico#1
-        port = self.get_parameter('serial_port').value
-        try:
-            self.serial = serial.Serial(port, timeout=0)
-            self.get_logger().info(f'Opened serial port: {port}')
-        except serial.SerialException as e:
-            self.get_logger().error(f'Failed to open serial port {port}: {e}')
-            raise
-
-        # Serial write lock (image_callback writes, read thread reads)
-        self._serial_write_lock = threading.Lock()
+        self.add_on_set_parameters_callback(self._on_uvc_param_change)
 
         # Subscribe to image topic
         topic = self.get_parameter('image_topic').value
@@ -67,7 +59,6 @@ class UvcBridgeNode(Node):
             Image, topic, self.image_callback, 1)  # queue_size=1: drop old frames
 
         self.bridge = CvBridge()
-        self.last_send_time = 0.0
         self.frame_count = 0
 
         # Start reverse-channel read thread
@@ -77,9 +68,9 @@ class UvcBridgeNode(Node):
 
         self.get_logger().info(
             f'UVC Bridge started: topic={topic}, quality={self.get_parameter("jpeg_quality").value}, '
-            f'max_fps={self.get_parameter("max_fps").value}')
+            f'max_hz={self.get_parameter("max_hz").value}')
 
-    def _on_param_change(self, params):
+    def _on_uvc_param_change(self, params):
         for param in params:
             if param.name in ('jpeg_quality', 'frame_width', 'frame_height'):
                 self.get_logger().info(f'{param.name} changed to {param.value}')
@@ -89,13 +80,13 @@ class UvcBridgeNode(Node):
         """Background thread: reads reverse-channel commands from Pico#1."""
         while rclpy.ok():
             try:
-                data = self.serial.read(256)
+                data = self._serial.read(256)
                 if data:
                     for payload in self._receiver.feed(data):
                         self._handle_command(payload)
                 else:
                     time.sleep(0.01)
-            except serial.SerialException:
+            except (serial.SerialException, OSError):
                 break
 
     def _handle_command(self, payload: bytes):
@@ -111,10 +102,7 @@ class UvcBridgeNode(Node):
             ])
 
     def image_callback(self, msg: Image):
-        # Rate limiting
-        now = time.monotonic()
-        min_interval = 1.0 / self.get_parameter('max_fps').value
-        if (now - self.last_send_time) < min_interval:
+        if not self.check_rate_limit():
             return
 
         # Convert ROS Image to OpenCV BGR
@@ -141,17 +129,15 @@ class UvcBridgeNode(Node):
 
         jpeg_bytes = jpeg_buf.tobytes()
 
-        # Build framed packet and send
+        # Build framed packet and send through the fault pipeline
         try:
             frame = frame_protocol.build_frame(jpeg_bytes)
-            with self._serial_write_lock:
-                self.serial.write(frame)
-                self.serial.flush()
-        except (serial.SerialException, ValueError) as e:
-            self.get_logger().error(f'Serial write failed: {e}')
+        except ValueError as e:
+            self.get_logger().error(f'Frame build failed: {e}')
+            return
+        if not self.serial_write(frame, channel='video'):
             return
 
-        self.last_send_time = now
         self.frame_count += 1
 
         if self.frame_count % 100 == 0:
@@ -161,8 +147,6 @@ class UvcBridgeNode(Node):
                 f'JPEG={len(jpeg_bytes)} bytes)')
 
     def destroy_node(self):
-        if hasattr(self, 'serial') and self.serial.is_open:
-            self.serial.close()
         super().destroy_node()
 
 

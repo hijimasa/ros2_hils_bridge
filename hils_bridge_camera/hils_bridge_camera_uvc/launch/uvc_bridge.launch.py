@@ -9,7 +9,8 @@ def generate_launch_description():
         DeclareLaunchArgument('serial_port', default_value='/dev/ttyACM0'),
         DeclareLaunchArgument('jpeg_quality', default_value='50'),
         DeclareLaunchArgument('image_topic', default_value='/image_raw'),
-        DeclareLaunchArgument('max_fps', default_value='15.0'),
+        DeclareLaunchArgument('max_fps', default_value='15.0',
+                              description='Maximum frame rate (maps to max_hz)'),
         DeclareLaunchArgument('frame_width', default_value='640'),
         DeclareLaunchArgument('frame_height', default_value='480'),
 
@@ -21,7 +22,7 @@ def generate_launch_description():
                 'serial_port': LaunchConfiguration('serial_port'),
                 'jpeg_quality': LaunchConfiguration('jpeg_quality'),
                 'image_topic': LaunchConfiguration('image_topic'),
-                'max_fps': LaunchConfiguration('max_fps'),
+                'max_hz': LaunchConfiguration('max_fps'),
                 'frame_width': LaunchConfiguration('frame_width'),
                 'frame_height': LaunchConfiguration('frame_height'),
             }],

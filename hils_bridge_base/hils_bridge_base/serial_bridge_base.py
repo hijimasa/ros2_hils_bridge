@@ -42,15 +42,17 @@ from hils_bridge_base.fault_injection import DelayedSender, FaultPipeline
 class SerialBridgeBase(Node):
     """Base class for FT234X cross-connection serial bridge nodes."""
 
-    def __init__(self, node_name: str, *, default_baudrate: int = 115200):
+    def __init__(self, node_name: str, *, default_baudrate: int = 115200,
+                 default_serial_port: str = '/dev/ttyUSB0',
+                 default_max_hz: float = 10.0):
         super().__init__(node_name)
 
         # Parameters
-        self.declare_parameter('serial_port', '/dev/ttyUSB0')
+        self.declare_parameter('serial_port', default_serial_port)
         self.declare_parameter('baudrate', default_baudrate,
             ParameterDescriptor(
                 description='Serial baudrate. Must match the real sensor driver expectation.'))
-        self.declare_parameter('max_hz', 10.0,
+        self.declare_parameter('max_hz', default_max_hz,
             ParameterDescriptor(
                 description='Maximum output rate in Hz.'))
 
