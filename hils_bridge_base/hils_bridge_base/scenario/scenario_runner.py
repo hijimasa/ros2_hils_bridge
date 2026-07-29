@@ -273,10 +273,14 @@ class ScenarioRunnerNode(Node):
         tracked.status = SUCCEEDED if result.success else FAILED
         tracked.result = result.message
         tracked.fault_id = getattr(result, 'fault_id', '')
-        log = self.get_logger().info if result.success \
-            else self.get_logger().error
-        log(f'[scenario_event] event {tracked.event.index} '
-            f'{tracked.status}: {result.message}')
+        line = (f'[scenario_event] event {tracked.event.index} '
+                f'{tracked.status}: {result.message}')
+        # rclpy loggers pin the severity per call site, so keep
+        # separate statements for info and error.
+        if result.success:
+            self.get_logger().info(line)
+        else:
+            self.get_logger().error(line)
 
     # -- state --
 

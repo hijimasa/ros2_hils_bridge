@@ -17,6 +17,12 @@ install(PROGRAMS
   RENAME scenario_runner
 )
 
+install(PROGRAMS
+  ${PROJECT_NAME}/observation/oracle_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME scenario_oracle
+)
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
@@ -24,6 +30,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_fault_injection test/test_fault_injection.py)
   ament_add_pytest_test(test_scenario test/test_scenario.py)
   ament_add_pytest_test(test_device_state test/test_device_state.py)
+  ament_add_pytest_test(test_observation test/test_observation.py)
 endif()
 
 ament_package()
