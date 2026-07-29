@@ -267,17 +267,28 @@ class _OusterApiHandler(BaseHTTPRequestHandler):
                 pass
 
     def _send_json(self, obj, status=200):
-        body = json.dumps(obj).encode('utf-8')
-        self.send_response(status)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        self._send_body(json.dumps(obj).encode('utf-8'),
+                        'application/json', status)
 
     def _send_text(self, text, status=200):
-        body = text.encode('utf-8')
+        self._send_body(text.encode('utf-8'), 'text/plain', status)
+
+    def _send_body(self, body: bytes, content_type: str, status: int):
+        """Send a response through the optional fault filter.
+
+        The filter (attached by the emulator node) may change the status
+        code, corrupt/truncate/delay the body, or return None to emulate
+        a silent device: the connection is closed without any response.
+        """
+        response_filter = getattr(self.server, 'response_filter', None)
+        if response_filter is not None:
+            result = response_filter(self._path(), status, body)
+            if result is None:
+                self.close_connection = True
+                return
+            status, body = result
         self.send_response(status)
-        self.send_header('Content-Type', 'text/plain')
+        self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -436,7 +447,17 @@ class _OusterApiHandler(BaseHTTPRequestHandler):
                 self._log(f'[set_config_param] on_config_change error: {e}',
                           'warn')
 
+    def _request_allowed(self) -> bool:
+        """A powered-off / rebooting device does not answer HTTP at all."""
+        request_gate = getattr(self.server, 'request_gate', None)
+        if request_gate is not None and not request_gate():
+            self.close_connection = True
+            return False
+        return True
+
     def do_GET(self):
+        if not self._request_allowed():
+            return
         path = self._path()
         if self._handle_metadata_get(path):
             self._log(f'[HTTP get] {path}')
@@ -447,6 +468,8 @@ class _OusterApiHandler(BaseHTTPRequestHandler):
         self.send_error(404, f'Not Found: {self.path}')
 
     def do_PUT(self):
+        if not self._request_allowed():
+            return
         path = self._path()
         raw = self._read_body()
         if path == '/api/v1/sensor/config':
@@ -461,6 +484,8 @@ class _OusterApiHandler(BaseHTTPRequestHandler):
         self.send_error(404, f'Not Found: {self.path}')
 
     def do_POST(self):
+        if not self._request_allowed():
+            return
         path = self._path()
         raw = self._read_body()
         if path == '/api/v1/sensor/config':
@@ -474,6 +499,8 @@ class _OusterApiHandler(BaseHTTPRequestHandler):
         self.send_error(404, f'Not Found: {self.path}')
 
     def do_DELETE(self):
+        if not self._request_allowed():
+            return
         path = self._path()
         if path == '/api/v1/user/data':
             self._send_json('')
@@ -492,20 +519,30 @@ class HttpApiServer:
     def __init__(self, bind_ip: str,
                  metadata_provider,
                  on_config_change=None,
-                 logger=None):
+                 logger=None,
+                 port: int = OUSTER_HTTP_PORT,
+                 request_gate=None,
+                 response_filter=None):
         """
         Args:
             bind_ip: IP to bind the HTTP server to (the emulated sensor IP).
             metadata_provider: callable returning the current full metadata dict.
             on_config_change: callable(updates_dict) invoked on PUT config.
             logger: optional ROS logger.
+            port: HTTP port (real sensor uses 80; tests may override).
+            request_gate: callable() -> bool; False closes the connection
+                without any response (device off / rebooting).
+            response_filter: callable(path, status, body_bytes) returning
+                (status, body_bytes) or None to suppress the response.
         """
         self._server = _ThreadingHTTPServer(
-            (bind_ip, OUSTER_HTTP_PORT), _OusterApiHandler)
+            (bind_ip, port), _OusterApiHandler)
         # Attach provider/callbacks to the server instance so handlers can access
         self._server.metadata_store = metadata_provider
         self._server.on_config_change = on_config_change
         self._server.logger = logger
+        self._server.request_gate = request_gate
+        self._server.response_filter = response_filter
         self._thread = None
 
     def start(self):

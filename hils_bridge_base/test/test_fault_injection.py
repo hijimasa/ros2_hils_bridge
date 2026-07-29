@@ -10,7 +10,8 @@ import pytest
 
 from hils_bridge_base.fault_injection import (
     CorruptionFault, DelayedSender, DelayFault, DropFault, DuplicateFault,
-    FaultPipeline, FaultSpecError, FreezeFault, ReorderFault, create_fault,
+    FaultPipeline, FaultSpecError, FreezeFault, HttpStatusFault,
+    ReorderFault, create_fault,
 )
 
 PKT = bytes(range(256)) * 4  # 1024-byte test packet
@@ -177,6 +178,42 @@ def test_reorder_shuffle_is_seeded():
     assert a == b
     assert sorted(a) == [bytes([i]) for i in range(16)]  # nothing lost
     assert released(5) != released(6)
+
+
+# -- http_status --
+
+def test_http_status_overrides_status_not_body():
+    pipeline = FaultPipeline()
+    fault = HttpStatusFault('h1', target='http',
+                            parameters={'status': 503})
+    pipeline.add_fault(fault)
+    # Body passes through the pipeline unchanged.
+    plan = pipeline.apply(b'{"ok": true}', 'http')
+    assert plan[0].data == b'{"ok": true}'
+    # Status sampled out of band.
+    assert fault.sample_status() == 503
+    assert fault.applied_count == 1
+
+
+def test_http_status_probability_seeded():
+    def samples(seed):
+        fault = HttpStatusFault('h1', seed=seed,
+                                parameters={'status': 500,
+                                            'probability': 0.5})
+        return [fault.sample_status() for _ in range(50)]
+
+    assert samples(9) == samples(9)
+    hits = [s for s in samples(9) if s == 500]
+    assert 10 <= len(hits) <= 40
+
+
+def test_faults_for_filters_by_channel():
+    pipeline = FaultPipeline()
+    pipeline.add_fault(DropFault('d1', target='data'))
+    pipeline.add_fault(HttpStatusFault('h1', target='http'))
+    pipeline.add_fault(DelayFault('t1'))  # all channels
+    ids = [f.fault_id for f in pipeline.faults_for('http')]
+    assert ids == ['h1', 't1']
 
 
 # -- reproducibility (docs section 17.1) --

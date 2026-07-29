@@ -11,6 +11,7 @@ rclpy-independent core:
   duplicate_fault   - packet duplication
   freeze_fault      - stale data: repeat first captured packet
   reorder_fault     - grouped shuffle/reverse reordering
+  http_status_fault - HTTP status code override (sampled by HTTP emulators)
 
 ROS 2 integration (imported separately to keep the core testable
 without ROS):
@@ -28,11 +29,12 @@ from .corruption_fault import CorruptionFault
 from .duplicate_fault import DuplicateFault
 from .freeze_fault import FreezeFault
 from .reorder_fault import ReorderFault
+from .http_status_fault import HttpStatusFault
 
 FAULT_CLASSES = {
     cls.fault_type: cls
     for cls in (DelayFault, DropFault, CorruptionFault, DuplicateFault,
-                FreezeFault, ReorderFault)
+                FreezeFault, ReorderFault, HttpStatusFault)
 }
 
 
@@ -58,6 +60,6 @@ __all__ = [
     'Fault', 'FaultSpecError', 'ScheduledPacket',
     'FaultPipeline', 'DelayedSender',
     'DelayFault', 'DropFault', 'CorruptionFault', 'DuplicateFault',
-    'FreezeFault', 'ReorderFault',
+    'FreezeFault', 'ReorderFault', 'HttpStatusFault',
     'FAULT_CLASSES', 'create_fault',
 ]

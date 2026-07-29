@@ -40,8 +40,24 @@ from rcl_interfaces.msg import ParameterDescriptor, IntegerRange, SetParametersR
 from sensor_msgs.msg import PointCloud2, Imu
 from sensor_msgs_py import point_cloud2
 
+from hils_bridge_base.device_state import state as device_states
+from hils_bridge_base.fault_injection import HttpStatusFault
 from hils_bridge_base.udp_emulator_base import UdpEmulatorBase
 from hils_bridge_lidar_ouster_os1 import ouster_protocol as op
+
+# The HTTP config API stays reachable in every state where the sensor
+# is on the network but not streaming (docs section 9.1: the config API
+# and the data stream fail independently).
+_HTTP_CHANNEL_POLICY = {
+    device_states.DISCOVERABLE:
+        frozenset({'discovery', 'command', 'http'}),
+    device_states.CONFIGURING:
+        frozenset({'discovery', 'command', 'http'}),
+    device_states.CONFIGURATION_FAULT:
+        frozenset({'discovery', 'command', 'http'}),
+    device_states.READY:
+        frozenset({'discovery', 'command', 'status', 'position', 'http'}),
+}
 
 
 class OusterEmulatorNode(UdpEmulatorBase):
@@ -52,6 +68,7 @@ class OusterEmulatorNode(UdpEmulatorBase):
             node_name='hils_ouster_emulator',
             default_device_ip='192.168.1.100',
             default_host_ip='192.168.1.5',
+            channel_policy=_HTTP_CHANNEL_POLICY,
         )
 
         # ── Parameters ──
@@ -81,6 +98,10 @@ class OusterEmulatorNode(UdpEmulatorBase):
         self.declare_parameter('elevation_filter', True,
             ParameterDescriptor(
                 description='Drop points outside sensor vertical FOV'))
+        self.declare_parameter('http_port', op.OUSTER_HTTP_PORT,
+            ParameterDescriptor(
+                description='HTTP API port. Real sensor uses 80; tests '
+                            'may use an unprivileged port.'))
 
         self.add_on_set_parameters_callback(self._on_ouster_param_change)
 
@@ -106,16 +127,20 @@ class OusterEmulatorNode(UdpEmulatorBase):
         )
 
         # ── HTTP REST API server (port 80) ──
+        http_port = self.get_parameter('http_port').value
         try:
             self._http_server = op.HttpApiServer(
                 bind_ip=self.device_ip,
                 metadata_provider=lambda: self._metadata,
                 on_config_change=self._on_http_config_change,
                 logger=self.get_logger(),
+                port=http_port,
+                request_gate=lambda: self.device_state.is_open('http'),
+                response_filter=self._filter_http_response,
             )
             self._http_server.start()
             self.get_logger().info(
-                f'HTTP API listening on http://{self.device_ip}:{op.OUSTER_HTTP_PORT}/')
+                f'HTTP API listening on http://{self.device_ip}:{http_port}/')
         except PermissionError as e:
             self.get_logger().error(
                 f'Cannot bind HTTP port 80: {e}\n'
@@ -184,6 +209,33 @@ class OusterEmulatorNode(UdpEmulatorBase):
                               'downsample_mode'):
                 self.get_logger().info(f'{param.name} changed to {param.value}')
         return SetParametersResult(successful=True)
+
+    def _filter_http_response(self, path, status, body: bytes):
+        """Apply device state and fault pipeline to one HTTP response.
+
+        Runs on the HTTP server's per-connection thread. Returns
+        (status, body) or None to close the connection silently.
+        """
+        # State gate on the response side (counted as suppressed).
+        if not self.device_state.allows('http'):
+            return None
+
+        # Status code override (docs 9.1: invalid HTTP status).
+        for fault in self.fault_pipeline.faults_for('http'):
+            if isinstance(fault, HttpStatusFault):
+                override = fault.sample_status()
+                if override is not None:
+                    status = override
+
+        # Body faults: drop -> silent, corrupt/truncate -> broken JSON,
+        # delay -> slow response (blocks only this connection's thread).
+        plan = self.fault_pipeline.apply(bytes(body), 'http')
+        if not plan:
+            return None
+        pkt = plan[0]  # duplicates are meaningless for one HTTP response
+        if pkt.delay_s > 0:
+            time.sleep(min(pkt.delay_s, 60.0))
+        return status, pkt.data
 
     def _on_http_config_change(self, updates: dict):
         """Invoked when a client PUT /api/v1/sensor/config with updates."""
@@ -261,12 +313,10 @@ class OusterEmulatorNode(UdpEmulatorBase):
         if not packets:
             return
 
-        host = (self.host_ip, self._dst_port_lidar)
+        with self._port_lock:
+            host = (self.host_ip, self._dst_port_lidar)
         for pkt in packets:
-            try:
-                self._lidar_sock.sendto(pkt, host)
-            except OSError as e:
-                self.get_logger().error(f'UDP send failed: {e}')
+            if not self.send_udp(self._lidar_sock, pkt, host, channel='data'):
                 return
 
         self.mark_sent()
@@ -463,11 +513,10 @@ class OusterEmulatorNode(UdpEmulatorBase):
             msg.angular_velocity.x,
             msg.angular_velocity.y,
             msg.angular_velocity.z)
-        try:
-            self._imu_sock.sendto(pkt, (self.host_ip, self._dst_port_imu))
+        with self._port_lock:
+            dst = (self.host_ip, self._dst_port_imu)
+        if self.send_udp(self._imu_sock, pkt, dst, channel='imu'):
             self._imu_count += 1
-        except OSError as e:
-            self.get_logger().debug(f'IMU send failed: {e}')
 
     # ── Stats ──
 

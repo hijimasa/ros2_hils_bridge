@@ -42,6 +42,16 @@ class FaultPipeline:
             self._faults.clear()
             return count
 
+    def faults_for(self, channel: str):
+        """Active faults applying to channel (snapshot list).
+
+        Used by emulators that need out-of-band fault attributes, e.g.
+        the HTTP status override (http_status_fault).
+        """
+        with self._lock:
+            return [f for f in self._faults.values()
+                    if f.applies_to(channel)]
+
     def apply(self, data: bytes, channel: str = 'data') -> List[ScheduledPacket]:
         """Run one outgoing packet through all active faults.
 

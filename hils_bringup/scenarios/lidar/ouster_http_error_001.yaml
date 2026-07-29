@@ -1,0 +1,48 @@
+# HTTP API fault test (docs section 9.1): while the data stream keeps
+# running, the config API first returns HTTP 500, then truncated JSON,
+# then stops answering entirely.
+# Expected driver behavior: metadata/config retries fail gracefully,
+# no crash, and the already-running data pipeline keeps publishing.
+scenario:
+  id: ouster_http_error_001
+  description: OS1 config API returns errors while the stream continues
+  target: /hils_ouster_emulator
+  seed: 5001
+
+events:
+  - at_sec: 10.0
+    action: inject_fault
+    fault:
+      fault_id: http_500
+      fault_type: http_status
+      target: http
+      duration_sec: 10.0
+      parameters:
+        status: 500
+
+  - at_sec: 25.0
+    action: inject_fault
+    fault:
+      fault_id: http_truncated
+      fault_type: corrupt
+      target: http
+      duration_sec: 10.0
+      parameters:
+        mode: truncate
+
+  - at_sec: 40.0
+    action: inject_fault
+    fault:
+      fault_id: http_silent
+      fault_type: drop
+      target: http
+      duration_sec: 10.0
+      parameters:
+        probability: 1.0
+
+expectations:
+  - type: topic_alive
+    topic: /ouster/points
+  - type: process_alive
+    node: ouster_ros
+    expected: true

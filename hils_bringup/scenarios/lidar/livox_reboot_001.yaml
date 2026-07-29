@@ -1,0 +1,29 @@
+# Livox reboot test (docs sections 7.8, 8.1): power off during
+# streaming, then reboot. After boot the emulator is discoverable but
+# NOT streaming - the driver must rediscover and re-send
+# WorkModeControl before points flow again.
+# Expected driver behavior: /livox/lidar stops, driver reconnects and
+# reconfigures, topic resumes without a driver restart.
+scenario:
+  id: livox_reboot_001
+  description: Mid-360 power loss and reboot requiring reconfiguration
+  target: /hils_livox_emulator
+  seed: 6001
+
+events:
+  - at_sec: 10.0
+    action: set_device_state
+    state: power_off
+
+  - at_sec: 15.0
+    action: set_device_state
+    state: reboot
+
+expectations:
+  - type: topic_timeout
+    topic: /livox/lidar
+    within_sec: 2.0
+  - type: topic_resume
+    topic: /livox/lidar
+    within_sec: 20.0
+    after_event_sec: 15.0
