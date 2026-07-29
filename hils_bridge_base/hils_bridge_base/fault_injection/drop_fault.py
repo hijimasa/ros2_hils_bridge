@@ -29,7 +29,8 @@ class DropFault(Fault):
     def parameters(self) -> dict:
         return {'probability': self.probability, 'every_n': self.every_n}
 
-    def process(self, packets: List[ScheduledPacket]) -> List[ScheduledPacket]:
+    def process(self, packets: List[ScheduledPacket],
+                channel: str) -> List[ScheduledPacket]:
         self.processed_count += 1
         if self.every_n > 0:
             drop = (self.processed_count % self.every_n) == 0

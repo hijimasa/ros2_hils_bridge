@@ -58,7 +58,7 @@ class FaultPipeline:
         for fault in faults:
             if not fault.applies_to(channel):
                 continue
-            packets = fault.process(packets)
+            packets = fault.process(packets, channel)
             if not packets:
                 break
 

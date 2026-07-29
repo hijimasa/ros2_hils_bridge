@@ -28,7 +28,8 @@ class DuplicateFault(Fault):
     def parameters(self) -> dict:
         return {'probability': self.probability, 'copies': self.copies}
 
-    def process(self, packets: List[ScheduledPacket]) -> List[ScheduledPacket]:
+    def process(self, packets: List[ScheduledPacket],
+                channel: str) -> List[ScheduledPacket]:
         self.processed_count += 1
         if self.rng.random() >= self.probability:
             return packets

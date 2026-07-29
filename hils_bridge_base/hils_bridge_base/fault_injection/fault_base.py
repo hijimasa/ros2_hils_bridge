@@ -51,8 +51,13 @@ class Fault(ABC):
         return self.target is None or self.target == channel
 
     @abstractmethod
-    def process(self, packets: List[ScheduledPacket]) -> List[ScheduledPacket]:
-        """Transform the scheduled packets for one send call."""
+    def process(self, packets: List[ScheduledPacket],
+                channel: str) -> List[ScheduledPacket]:
+        """Transform the scheduled packets for one send call.
+
+        channel is the logical stream the packets belong to; stateful
+        faults (freeze, reorder) keep independent state per channel.
+        """
 
     def parameters(self) -> dict:
         return {}

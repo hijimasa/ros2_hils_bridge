@@ -9,6 +9,8 @@ rclpy-independent core:
   drop_fault        - probabilistic / every-N packet loss
   corruption_fault  - byte-level bit flip / zero / truncate
   duplicate_fault   - packet duplication
+  freeze_fault      - stale data: repeat first captured packet
+  reorder_fault     - grouped shuffle/reverse reordering
 
 ROS 2 integration (imported separately to keep the core testable
 without ROS):
@@ -24,10 +26,13 @@ from .delay_fault import DelayFault
 from .drop_fault import DropFault
 from .corruption_fault import CorruptionFault
 from .duplicate_fault import DuplicateFault
+from .freeze_fault import FreezeFault
+from .reorder_fault import ReorderFault
 
 FAULT_CLASSES = {
     cls.fault_type: cls
-    for cls in (DelayFault, DropFault, CorruptionFault, DuplicateFault)
+    for cls in (DelayFault, DropFault, CorruptionFault, DuplicateFault,
+                FreezeFault, ReorderFault)
 }
 
 
@@ -53,5 +58,6 @@ __all__ = [
     'Fault', 'FaultSpecError', 'ScheduledPacket',
     'FaultPipeline', 'DelayedSender',
     'DelayFault', 'DropFault', 'CorruptionFault', 'DuplicateFault',
+    'FreezeFault', 'ReorderFault',
     'FAULT_CLASSES', 'create_fault',
 ]

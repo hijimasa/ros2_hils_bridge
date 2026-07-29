@@ -54,7 +54,8 @@ class DelayFault(Fault):
                 delay_ms += self.rng.uniform(-self.jitter_ms, self.jitter_ms)
         return max(0.0, delay_ms) / 1000.0
 
-    def process(self, packets: List[ScheduledPacket]) -> List[ScheduledPacket]:
+    def process(self, packets: List[ScheduledPacket],
+                channel: str) -> List[ScheduledPacket]:
         self.processed_count += 1
         extra_s = self._sample_delay_s()
         if extra_s <= 0.0:

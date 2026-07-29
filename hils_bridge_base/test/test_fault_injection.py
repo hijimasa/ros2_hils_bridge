@@ -10,7 +10,7 @@ import pytest
 
 from hils_bridge_base.fault_injection import (
     CorruptionFault, DelayedSender, DelayFault, DropFault, DuplicateFault,
-    FaultPipeline, FaultSpecError, create_fault,
+    FaultPipeline, FaultSpecError, FreezeFault, ReorderFault, create_fault,
 )
 
 PKT = bytes(range(256)) * 4  # 1024-byte test packet
@@ -93,7 +93,7 @@ def test_corrupt_bit_flip_changes_data_keeps_length():
 def test_corrupt_zero_at_fixed_offset():
     fault = CorruptionFault(
         'c1', parameters={'mode': 'zero', 'num_bytes': 2, 'offset': 10})
-    plan = fault.process([_scheduled(PKT)])
+    plan = fault.process([_scheduled(PKT)], 'data')
     assert plan[0].data[10:12] == b'\x00\x00'
     assert plan[0].data[:10] == PKT[:10]
     assert plan[0].data[12:] == PKT[12:]
@@ -136,6 +136,47 @@ def test_duplicate_copies():
     plan = pipeline.apply(PKT)
     assert len(plan) == 3
     assert all(p.data == PKT for p in plan)
+
+
+# -- freeze --
+
+def test_freeze_repeats_first_packet_per_channel():
+    pipeline = FaultPipeline()
+    pipeline.add_fault(FreezeFault('f1'))
+    first_a = pipeline.apply(b'aaa-1', 'a')[0].data
+    first_b = pipeline.apply(b'bbb-1', 'b')[0].data
+    assert first_a == b'aaa-1' and first_b == b'bbb-1'
+    for i in range(5):
+        assert pipeline.apply(f'aaa-{i + 2}'.encode(), 'a')[0].data == b'aaa-1'
+        assert pipeline.apply(f'bbb-{i + 2}'.encode(), 'b')[0].data == b'bbb-1'
+
+
+# -- reorder --
+
+def test_reorder_reverse_groups():
+    pipeline = FaultPipeline()
+    pipeline.add_fault(ReorderFault(
+        'r1', parameters={'group_size': 3, 'mode': 'reverse'}))
+    assert pipeline.apply(b'p1') == []
+    assert pipeline.apply(b'p2') == []
+    plan = pipeline.apply(b'p3')
+    assert [p.data for p in plan] == [b'p3', b'p2', b'p1']
+
+
+def test_reorder_shuffle_is_seeded():
+    def released(seed):
+        pipeline = FaultPipeline()
+        pipeline.add_fault(ReorderFault(
+            'r1', seed=seed, parameters={'group_size': 8}))
+        out = []
+        for i in range(16):
+            out.extend(p.data for p in pipeline.apply(bytes([i])))
+        return out
+
+    a, b = released(5), released(5)
+    assert a == b
+    assert sorted(a) == [bytes([i]) for i in range(16)]  # nothing lost
+    assert released(5) != released(6)
 
 
 # -- reproducibility (docs section 17.1) --

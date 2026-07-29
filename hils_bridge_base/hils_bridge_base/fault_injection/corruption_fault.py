@@ -70,7 +70,8 @@ class CorruptionFault(Fault):
                 buf[pos] ^= self.rng.randrange(1, 256)
         return bytes(buf)
 
-    def process(self, packets: List[ScheduledPacket]) -> List[ScheduledPacket]:
+    def process(self, packets: List[ScheduledPacket],
+                channel: str) -> List[ScheduledPacket]:
         self.processed_count += 1
         if self.rng.random() >= self.probability:
             return packets
