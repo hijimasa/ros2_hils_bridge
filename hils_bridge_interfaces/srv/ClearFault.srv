@@ -1,0 +1,5 @@
+# Clear one active fault by id, or all faults when fault_id is empty.
+string fault_id
+---
+bool success
+string message

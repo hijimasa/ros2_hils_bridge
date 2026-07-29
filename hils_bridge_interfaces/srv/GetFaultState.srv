@@ -1,0 +1,5 @@
+# Query active faults and pipeline statistics.
+---
+# YAML document: active_faults, input/output/dropped packet counters,
+# pending_delayed_packets (docs section 11.2).
+string state_yaml

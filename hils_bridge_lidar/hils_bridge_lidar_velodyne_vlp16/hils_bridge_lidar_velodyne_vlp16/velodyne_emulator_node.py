@@ -181,11 +181,9 @@ class VelodyneEmulatorNode(UdpEmulatorBase):
         secs_in_hour = now % 3600.0
         timestamp_us = int(secs_in_hour * 1_000_000)
         pkt = _build_position_packet(timestamp_us)
-        try:
-            self._position_sock.sendto(
-                pkt, (self.host_ip, VLP16_POSITION_PORT))
-        except OSError as e:
-            self.get_logger().debug(f'Position packet send failed: {e}')
+        self.send_udp(self._position_sock, pkt,
+                      (self.host_ip, VLP16_POSITION_PORT),
+                      channel='position')
 
     # -- Point cloud processing --
 
@@ -210,10 +208,7 @@ class VelodyneEmulatorNode(UdpEmulatorBase):
 
         host = (self.host_ip, VLP16_DATA_PORT)
         for pkt in packets:
-            try:
-                self._data_sock.sendto(pkt, host)
-            except OSError as e:
-                self.get_logger().error(f'UDP send failed: {e}')
+            if not self.send_udp(self._data_sock, pkt, host, channel='data'):
                 return
 
         self.mark_sent()

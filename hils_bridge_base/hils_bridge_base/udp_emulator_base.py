@@ -26,6 +26,7 @@ Usage:
             self.create_subscription(PointCloud2, '/points', self.pc_callback, qos)
 """
 
+import functools
 import socket
 import time
 import threading
@@ -35,6 +36,7 @@ from rclpy.node import Node
 from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
 
 from hils_bridge_base import network_utils
+from hils_bridge_base.fault_injection import DelayedSender, FaultPipeline
 
 
 class UdpEmulatorBase(Node):
@@ -101,6 +103,29 @@ class UdpEmulatorBase(Node):
         self._send_count = 0
         self._udp_cnt = 0
 
+        # Fault injection: with no active faults, send_udp() is a direct
+        # sendto() and behavior is identical to the pre-fault-injection
+        # implementation.
+        self._fault_pipeline = FaultPipeline()
+        self._delayed_sender = DelayedSender(
+            on_error=lambda e: self.get_logger().error(
+                f'Delayed send failed: {e}'))
+        self._fault_controller = None
+        self.declare_parameter('enable_fault_services', True,
+            ParameterDescriptor(
+                description='Create ~/inject_fault, ~/clear_fault and '
+                            '~/get_fault_state services.'))
+        if self.get_parameter('enable_fault_services').value:
+            try:
+                from hils_bridge_base.fault_injection.fault_controller \
+                    import FaultInjectionController
+                self._fault_controller = FaultInjectionController(
+                    self, self._fault_pipeline, self._delayed_sender)
+            except ImportError as e:
+                self.get_logger().warning(
+                    f'Fault injection services unavailable '
+                    f'(hils_bridge_interfaces not built?): {e}')
+
         # Stats timer
         self.create_timer(5.0, self._stats_callback)
 
@@ -142,6 +167,42 @@ class UdpEmulatorBase(Node):
         self._sockets.append(sock)
         return sock
 
+    @property
+    def fault_pipeline(self) -> FaultPipeline:
+        """The fault injection pipeline applied by send_udp()."""
+        return self._fault_pipeline
+
+    def send_udp(self, sock: socket.socket, data: bytes, addr,
+                 *, channel: str = 'data') -> bool:
+        """Send a UDP packet through the fault injection pipeline.
+
+        With no active faults this is a plain sock.sendto(). Active
+        faults may drop the packet (returns True: the drop is
+        intentional), corrupt it, duplicate it, or defer it via the
+        delayed sender thread.
+
+        Args:
+            sock: Socket to send on.
+            data: UDP payload.
+            addr: (host, port) destination.
+            channel: Logical stream name faults can target
+                     (e.g. 'data', 'position', 'imu').
+
+        Returns:
+            True unless an immediate send failed with OSError.
+        """
+        for pkt in self._fault_pipeline.apply(bytes(data), channel):
+            if pkt.delay_s <= 0.0:
+                try:
+                    sock.sendto(pkt.data, addr)
+                except OSError as e:
+                    self.get_logger().error(f'UDP send failed: {e}')
+                    return False
+            else:
+                self._delayed_sender.submit(
+                    pkt.delay_s, functools.partial(sock.sendto, pkt.data, addr))
+        return True
+
     def check_rate_limit(self) -> bool:
         """Check if enough time has passed since the last send.
 
@@ -171,6 +232,13 @@ class UdpEmulatorBase(Node):
             f'device_ip={self._device_ip}')
 
     def destroy_node(self):
+        # Fail-safe (docs section 17.5): discard queued delayed packets
+        # instead of flushing stale data after shutdown.
+        if hasattr(self, '_delayed_sender'):
+            discarded = self._delayed_sender.stop()
+            if discarded:
+                self.get_logger().info(
+                    f'Discarded {discarded} pending delayed packet(s)')
         for sock in self._sockets:
             try:
                 sock.close()

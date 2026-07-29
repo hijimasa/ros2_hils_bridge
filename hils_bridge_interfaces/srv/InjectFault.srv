@@ -1,0 +1,16 @@
+# Inject a fault into the emulator's output pipeline.
+#
+# fault_yaml is a YAML document (docs section 11.1), e.g.:
+#   fault_type: delay
+#   target: data            # optional channel; omit for all channels
+#   seed: 1001              # optional; default = node parameter fault_seed
+#   duration_sec: 10.0      # optional; auto-clear after this time
+#   parameters:
+#     delay_ms: 250
+#     jitter_ms: 30
+string fault_yaml
+---
+bool success
+string message
+# Identifier to pass to ClearFault (generated if not given in the spec).
+string fault_id

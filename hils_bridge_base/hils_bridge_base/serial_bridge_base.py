@@ -26,6 +26,7 @@ Usage:
             self.serial_write(nmea.encode())
 """
 
+import functools
 import time
 import threading
 
@@ -34,6 +35,8 @@ import serial
 import rclpy
 from rclpy.node import Node
 from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
+
+from hils_bridge_base.fault_injection import DelayedSender, FaultPipeline
 
 
 class SerialBridgeBase(Node):
@@ -67,6 +70,28 @@ class SerialBridgeBase(Node):
         self._last_send_time = 0.0
         self._send_count = 0
 
+        # Fault injection: with no active faults, serial_write() behaves
+        # exactly as the pre-fault-injection implementation.
+        self._fault_pipeline = FaultPipeline()
+        self._delayed_sender = DelayedSender(
+            on_error=lambda e: self.get_logger().error(
+                f'Delayed serial write failed: {e}'))
+        self._fault_controller = None
+        self.declare_parameter('enable_fault_services', True,
+            ParameterDescriptor(
+                description='Create ~/inject_fault, ~/clear_fault and '
+                            '~/get_fault_state services.'))
+        if self.get_parameter('enable_fault_services').value:
+            try:
+                from hils_bridge_base.fault_injection.fault_controller \
+                    import FaultInjectionController
+                self._fault_controller = FaultInjectionController(
+                    self, self._fault_pipeline, self._delayed_sender)
+            except ImportError as e:
+                self.get_logger().warning(
+                    f'Fault injection services unavailable '
+                    f'(hils_bridge_interfaces not built?): {e}')
+
         # Stats timer
         self.create_timer(10.0, self._stats_callback)
 
@@ -92,8 +117,33 @@ class SerialBridgeBase(Node):
             return False
         return True
 
-    def serial_write(self, data: bytes) -> bool:
-        """Write data to the serial port (thread-safe).
+    @property
+    def fault_pipeline(self) -> FaultPipeline:
+        """The fault injection pipeline applied by serial_write()."""
+        return self._fault_pipeline
+
+    def serial_write(self, data: bytes, *, channel: str = 'serial') -> bool:
+        """Write data to the serial port through the fault pipeline.
+
+        With no active faults this is a direct write. Active faults may
+        drop the data (returns True: the drop is intentional), corrupt
+        it, duplicate it, or defer it via the delayed sender thread.
+
+        Returns:
+            True unless an immediate write failed.
+        """
+        ok = True
+        for pkt in self._fault_pipeline.apply(bytes(data), channel):
+            if pkt.delay_s <= 0.0:
+                ok = self._raw_serial_write(pkt.data) and ok
+            else:
+                self._delayed_sender.submit(
+                    pkt.delay_s,
+                    functools.partial(self._raw_serial_write, pkt.data))
+        return ok
+
+    def _raw_serial_write(self, data: bytes) -> bool:
+        """Write data to the serial port (thread-safe, no fault pipeline).
 
         Also updates rate-limit timestamp and send counter.
 
@@ -118,6 +168,13 @@ class SerialBridgeBase(Node):
             f'port={self.get_parameter("serial_port").value}')
 
     def destroy_node(self):
+        # Fail-safe (docs section 17.5): discard queued delayed writes
+        # instead of flushing stale data after shutdown.
+        if hasattr(self, '_delayed_sender'):
+            discarded = self._delayed_sender.stop()
+            if discarded:
+                self.get_logger().info(
+                    f'Discarded {discarded} pending delayed write(s)')
         if hasattr(self, '_serial') and self._serial.is_open:
             self._serial.close()
         super().destroy_node()
