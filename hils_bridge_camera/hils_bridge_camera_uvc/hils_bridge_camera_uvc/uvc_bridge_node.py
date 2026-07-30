@@ -16,10 +16,14 @@ JPEG quality and resolution can be changed at runtime:
     ros2 param set /hils_uvc_bridge jpeg_quality 80
 """
 
+import io
+
 import cv2
 import serial
 import time
 import threading
+
+from PIL import Image as PilImage
 
 import rclpy
 from rclpy.parameter import Parameter
@@ -119,15 +123,21 @@ class UvcBridgeNode(SerialBridgeBase):
         if w != target_w or h != target_h:
             cv_image = cv2.resize(cv_image, (target_w, target_h))
 
-        # JPEG encode
+        # JPEG encode with 4:2:2 chroma subsampling, like a real UVC
+        # camera. Hosts assume this: usb_cam's mjpeg2rgb pre-builds its
+        # swscale context for 4:2:2 and reads past the smaller chroma
+        # planes of a 4:2:0 frame (segfault). cv2.imencode can only
+        # produce 4:2:0 until OpenCV 4.7, hence PIL.
         quality = self.get_parameter('jpeg_quality').value
-        ret, jpeg_buf = cv2.imencode(
-            '.jpg', cv_image, [cv2.IMWRITE_JPEG_QUALITY, quality])
-        if not ret:
-            self.get_logger().warn('JPEG encode failed')
+        try:
+            jpeg_io = io.BytesIO()
+            PilImage.fromarray(cv_image[:, :, ::-1]).save(
+                jpeg_io, 'JPEG', quality=quality, subsampling=1)
+        except (OSError, ValueError) as e:
+            self.get_logger().warn(f'JPEG encode failed: {e}')
             return
 
-        jpeg_bytes = jpeg_buf.tobytes()
+        jpeg_bytes = jpeg_io.getvalue()
 
         # Build framed packet and send through the fault pipeline
         try:
