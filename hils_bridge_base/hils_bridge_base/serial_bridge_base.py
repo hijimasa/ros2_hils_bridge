@@ -36,6 +36,7 @@ import rclpy
 from rclpy.node import Node
 from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
 
+from hils_bridge_base import frame_protocol
 from hils_bridge_base.device_state import DeviceStateMachine
 from hils_bridge_base.device_state import state as device_states
 from hils_bridge_base.fault_injection import DelayedSender, FaultPipeline
@@ -46,7 +47,13 @@ class SerialBridgeBase(Node):
 
     def __init__(self, node_name: str, *, default_baudrate: int = 115200,
                  default_serial_port: str = '/dev/ttyUSB0',
-                 default_max_hz: float = 10.0):
+                 default_max_hz: float = 10.0,
+                 frame_protocol_firmware: bool = False):
+        """frame_protocol_firmware: the peer is a HILS firmware speaking
+        the AA55 frame protocol; enables firmware-cooperative faults
+        (docs 9.3). Leave False for raw-protocol peers (NMEA, WT901)
+        where 0x50-series frames would just pollute the byte stream.
+        """
         super().__init__(node_name)
 
         # Parameters
@@ -97,6 +104,13 @@ class SerialBridgeBase(Node):
         # Fault injection: with no active faults, serial_write() behaves
         # exactly as the pre-fault-injection implementation.
         self._fault_pipeline = FaultPipeline()
+        # Firmware-cooperative faults (docs 9.3): commands are framed
+        # and written directly, bypassing the pipeline so an active
+        # drop fault cannot swallow its own clear command.
+        if frame_protocol_firmware:
+            self._fault_pipeline.set_firmware_transport(
+                lambda payload: self._raw_serial_write(
+                    frame_protocol.build_frame(payload)))
         self._delayed_sender = DelayedSender(
             on_error=lambda e: self.get_logger().error(
                 f'Delayed serial write failed: {e}'))

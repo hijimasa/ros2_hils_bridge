@@ -26,6 +26,42 @@ MSG_TYPE_LIDAR_IMU = 0x11
 MSG_TYPE_LIDAR_CONFIG = 0x12
 MSG_TYPE_LIDAR_STATUS = 0x18
 
+# Fault injection commands (docs section 9.3 / Phase 5)
+MSG_TYPE_FAULT_SET = 0x50
+MSG_TYPE_FAULT_CLEAR = 0x51
+MSG_TYPE_FAULT_ACK = 0x52
+MSG_TYPE_RESET_BOOTSEL = 0x5F
+
+FAULT_ACK_STATUS = {0x00: 'ok', 0x01: 'unknown_code', 0x02: 'bad_arg'}
+
+RESET_BOOTSEL_MAGIC = 0x544F4F42  # "BOOT" little-endian
+
+
+def build_fault_set(fault_code: int, arg0: int = 0, arg1: int = 0) -> bytes:
+    """Build a FAULT_SET payload (matches hils_fault_set_t)."""
+    return struct.pack('<BBLL', MSG_TYPE_FAULT_SET, fault_code, arg0, arg1)
+
+
+def build_fault_clear(fault_code: int = 0) -> bytes:
+    """Build a FAULT_CLEAR payload (fault_code 0 = clear all)."""
+    return struct.pack('<BB', MSG_TYPE_FAULT_CLEAR, fault_code)
+
+
+def build_reset_bootsel() -> bytes:
+    """Build the magic-guarded reboot-to-BOOTSEL payload."""
+    return struct.pack('<BL', MSG_TYPE_RESET_BOOTSEL, RESET_BOOTSEL_MAGIC)
+
+
+def parse_fault_ack(payload: bytes):
+    """Parse a FAULT_ACK payload.
+
+    Returns (fault_code, status_str) or None if not an ack.
+    """
+    if len(payload) < 3 or payload[0] != MSG_TYPE_FAULT_ACK:
+        return None
+    return (payload[1],
+            FAULT_ACK_STATUS.get(payload[2], f'status_{payload[2]}'))
+
 
 def compute_checksum(data: bytes) -> int:
     """Compute XOR checksum over data bytes."""

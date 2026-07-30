@@ -21,6 +21,18 @@ class FaultPipeline:
         self._input_count = 0
         self._output_count = 0
         self._dropped_count = 0
+        self._firmware_transport = None
+
+    def set_firmware_transport(self, transport) -> None:
+        """Install the firmware command sender (docs section 9.3).
+
+        transport(payload_bytes) must deliver a 0x50-series command to
+        the device firmware, bypassing this pipeline so active faults
+        cannot swallow their own set/clear commands. Nodes without
+        device firmware leave this unset; firmware-cooperative faults
+        then fail at injection time with a clear error.
+        """
+        self._firmware_transport = transport
 
     @property
     def has_faults(self) -> bool:
@@ -30,17 +42,29 @@ class FaultPipeline:
         with self._lock:
             if fault.fault_id in self._faults:
                 raise ValueError(f'fault_id already active: {fault.fault_id}')
+        # on_added may raise (e.g. no firmware transport) - call it
+        # before the fault becomes active so a failed arm leaves the
+        # pipeline unchanged.
+        fault.on_added(self._firmware_transport)
+        with self._lock:
+            if fault.fault_id in self._faults:
+                raise ValueError(f'fault_id already active: {fault.fault_id}')
             self._faults[fault.fault_id] = fault
 
     def remove_fault(self, fault_id: str) -> bool:
         with self._lock:
-            return self._faults.pop(fault_id, None) is not None
+            fault = self._faults.pop(fault_id, None)
+        if fault is not None:
+            fault.on_removed(self._firmware_transport)
+        return fault is not None
 
     def clear(self) -> int:
         with self._lock:
-            count = len(self._faults)
+            faults = list(self._faults.values())
             self._faults.clear()
-            return count
+        for fault in faults:
+            fault.on_removed(self._firmware_transport)
+        return len(faults)
 
     def faults_for(self, channel: str):
         """Active faults applying to channel (snapshot list).

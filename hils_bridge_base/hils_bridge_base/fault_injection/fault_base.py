@@ -62,6 +62,17 @@ class Fault(ABC):
     def parameters(self) -> dict:
         return {}
 
+    def on_added(self, firmware_transport) -> None:
+        """Hook called by FaultPipeline.add_fault.
+
+        firmware_transport is the pipeline's firmware command sender
+        (None on nodes without device firmware). Host-side faults
+        ignore it; firmware-cooperative faults forward a set command.
+        """
+
+    def on_removed(self, firmware_transport) -> None:
+        """Hook called when the fault leaves the pipeline (clear/expiry)."""
+
     def describe(self) -> dict:
         return {
             'fault_id': self.fault_id,

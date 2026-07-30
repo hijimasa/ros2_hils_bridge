@@ -20,6 +20,10 @@ MPU-6050 default sensitivity:
 """
 
 import struct
+import threading
+import time
+
+import serial
 
 import rclpy
 from sensor_msgs.msg import Imu
@@ -58,6 +62,7 @@ class I2cSensorBridgeNode(SerialBridgeBase):
         super().__init__(
             node_name='hils_i2c_sensor_bridge',
             default_baudrate=115200,
+            frame_protocol_firmware=True,
         )
 
         # Declare parameters
@@ -67,10 +72,39 @@ class I2cSensorBridgeNode(SerialBridgeBase):
         topic = self.get_parameter('imu_topic').value
         self.create_subscription(Imu, topic, self._imu_callback, 10)
 
+        # Reverse channel: fault acks from the slave firmware
+        self._receiver = frame_protocol.FrameProtocolReceiver()
+        self._read_thread = threading.Thread(
+            target=self._serial_read_loop, daemon=True)
+        self._read_thread.start()
+
         self.get_logger().info(
             f'I2C IMU Sensor Bridge started: topic={topic}, '
             f'accel_scale={ACCEL_LSB_PER_G} LSB/g, '
             f'gyro_scale={GYRO_LSB_PER_DPS} LSB/(deg/s)')
+
+    def _serial_read_loop(self):
+        """Background thread: log fault acks from the firmware.
+
+        The firmware also prints boot text on the same CDC stream; the
+        frame receiver skips everything outside AA55 framing.
+        """
+        while rclpy.ok():
+            try:
+                data = self._serial.read(256)
+                if data:
+                    for payload in self._receiver.feed(data):
+                        ack = frame_protocol.parse_fault_ack(payload)
+                        if ack:
+                            code, status = ack
+                            log = self.get_logger().info if status == 'ok' \
+                                else self.get_logger().warning
+                            log(f'firmware fault ack: code=0x{code:02X} '
+                                f'status={status}')
+                else:
+                    time.sleep(0.01)
+            except (serial.SerialException, OSError):
+                break
 
     def _accel_to_raw(self, accel_ms2: float) -> int:
         """Convert acceleration from m/s^2 to MPU-6050 raw int16.

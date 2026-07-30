@@ -43,6 +43,7 @@ class UvcBridgeNode(SerialBridgeBase):
             'hils_uvc_bridge',
             default_serial_port='/dev/ttyACM0',
             default_max_hz=15.0,
+            frame_protocol_firmware=True,
         )
 
         # Parameters with descriptors for discoverability
@@ -95,6 +96,13 @@ class UvcBridgeNode(SerialBridgeBase):
 
     def _handle_command(self, payload: bytes):
         """Process a reverse-channel command."""
+        ack = frame_protocol.parse_fault_ack(payload)
+        if ack:
+            code, status = ack
+            log = self.get_logger().info if status == 'ok' \
+                else self.get_logger().warning
+            log(f'firmware fault ack: code=0x{code:02X} status={status}')
+            return
         result = frame_protocol.parse_resolution_cmd(payload)
         if result:
             width, height, frame_index = result

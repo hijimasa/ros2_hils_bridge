@@ -32,12 +32,20 @@ from .freeze_fault import FreezeFault
 from .reorder_fault import ReorderFault
 from .http_status_fault import HttpStatusFault
 from .protocol_faults import NmeaChecksumFault, Wt901ChecksumFault
+from .firmware_faults import (
+    FirmwareFault, UvcUsbDetachFault, UvcFrameDropFault,
+    UvcPartialFrameFault, I2cNackFault, I2cResponseDelayFault,
+    I2cRegisterFreezeFault, I2cWhoAmIFault,
+)
 
 FAULT_CLASSES = {
     cls.fault_type: cls
     for cls in (DelayFault, DropFault, CorruptionFault, DuplicateFault,
                 FreezeFault, ReorderFault, HttpStatusFault,
-                NmeaChecksumFault, Wt901ChecksumFault)
+                NmeaChecksumFault, Wt901ChecksumFault,
+                UvcUsbDetachFault, UvcFrameDropFault, UvcPartialFrameFault,
+                I2cNackFault, I2cResponseDelayFault,
+                I2cRegisterFreezeFault, I2cWhoAmIFault)
 }
 
 
@@ -80,5 +88,8 @@ __all__ = [
     'DelayFault', 'DropFault', 'CorruptionFault', 'DuplicateFault',
     'FreezeFault', 'ReorderFault', 'HttpStatusFault',
     'NmeaChecksumFault', 'Wt901ChecksumFault',
+    'FirmwareFault', 'UvcUsbDetachFault', 'UvcFrameDropFault',
+    'UvcPartialFrameFault', 'I2cNackFault', 'I2cResponseDelayFault',
+    'I2cRegisterFreezeFault', 'I2cWhoAmIFault',
     'FAULT_CLASSES', 'create_fault', 'register_fault_class',
 ]
