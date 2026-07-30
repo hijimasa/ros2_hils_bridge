@@ -37,6 +37,7 @@ from .firmware_faults import (
     UvcPartialFrameFault, I2cNackFault, I2cResponseDelayFault,
     I2cRegisterFreezeFault, I2cWhoAmIFault,
 )
+from .netem_fault import NetemFault
 
 FAULT_CLASSES = {
     cls.fault_type: cls
@@ -45,7 +46,7 @@ FAULT_CLASSES = {
                 NmeaChecksumFault, Wt901ChecksumFault,
                 UvcUsbDetachFault, UvcFrameDropFault, UvcPartialFrameFault,
                 I2cNackFault, I2cResponseDelayFault,
-                I2cRegisterFreezeFault, I2cWhoAmIFault)
+                I2cRegisterFreezeFault, I2cWhoAmIFault, NetemFault)
 }
 
 
@@ -90,6 +91,6 @@ __all__ = [
     'NmeaChecksumFault', 'Wt901ChecksumFault',
     'FirmwareFault', 'UvcUsbDetachFault', 'UvcFrameDropFault',
     'UvcPartialFrameFault', 'I2cNackFault', 'I2cResponseDelayFault',
-    'I2cRegisterFreezeFault', 'I2cWhoAmIFault',
+    'I2cRegisterFreezeFault', 'I2cWhoAmIFault', 'NetemFault',
     'FAULT_CLASSES', 'create_fault', 'register_fault_class',
 ]
