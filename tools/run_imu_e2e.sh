@@ -28,8 +28,11 @@ BAUD=115200
 PIDS=()
 
 cleanup() {
+    # setsid gives each component its own process group; kill the whole
+    # group so ros2 run/launch wrappers cannot leave orphan nodes that
+    # confuse the next E2E run (stale scenario_runner services).
     for pid in "${PIDS[@]}"; do
-        kill "$pid" 2>/dev/null
+        kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null
     done
     wait 2>/dev/null
 }
@@ -66,7 +69,7 @@ else
 fi
 
 # 2. Simulation source: 50 Hz Imu
-python3 - > "$WORK/imu_pub.log" 2>&1 <<'EOF' &
+setsid python3 - > "$WORK/imu_pub.log" 2>&1 <<'EOF' &
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
@@ -90,7 +93,7 @@ EOF
 PIDS+=($!)
 
 # 3. Emulator bridge and real driver
-ros2 run hils_bridge_imu_witmotion_wt901 imu_bridge_node --ros-args \
+setsid ros2 run hils_bridge_imu_witmotion_wt901 imu_bridge_node --ros-args \
     -p serial_port:="$WORK/ttyBRIDGE" -p baudrate:="$BAUD" -p max_hz:=50.0 \
     > "$WORK/imu_bridge.log" 2>&1 &
 PIDS+=($!)
@@ -107,7 +110,7 @@ cp "$(ros2 pkg prefix witmotion_ros)/share/witmotion_ros/config/wt901.yml" \
    "$WT901_CFG"
 sed -i "s|port: .*|port: $WORK/ttyDRIVER|; s|baud_rate: .*|baud_rate: $BAUD|; \
         s|timeout_ms: .*|timeout_ms: 2000|" "$WT901_CFG"
-ros2 run witmotion_ros witmotion_ros_node --ros-args \
+setsid ros2 run witmotion_ros witmotion_ros_node --ros-args \
     --params-file "$WT901_CFG" > "$WORK/witmotion.log" 2>&1 &
 PIDS+=($!)
 
@@ -139,7 +142,7 @@ EOF
 echo '[e2e] normal path up, starting oracle + runner'
 
 # 4. Oracle (judges) and runner (injects)
-ros2 run hils_bridge_base scenario_oracle --ros-args \
+setsid ros2 run hils_bridge_base scenario_oracle --ros-args \
     -p scenario_file:="$SCENARIO" \
     -p observe_domain_id:="$OBSERVE_DOMAIN" \
     -p output_dir:="$WORK/reports" \
@@ -147,7 +150,7 @@ ros2 run hils_bridge_base scenario_oracle --ros-args \
 ORACLE_PID=$!
 PIDS+=($ORACLE_PID)
 sleep 3
-ros2 run hils_bridge_base scenario_runner --ros-args \
+setsid ros2 run hils_bridge_base scenario_runner --ros-args \
     -p scenario_file:="$SCENARIO" > "$WORK/runner.log" 2>&1 &
 PIDS+=($!)
 

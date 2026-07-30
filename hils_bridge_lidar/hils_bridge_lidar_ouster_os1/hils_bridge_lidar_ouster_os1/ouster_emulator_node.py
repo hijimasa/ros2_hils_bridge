@@ -152,6 +152,12 @@ class OusterEmulatorNode(UdpEmulatorBase):
         # ── UDP sockets ──
         self._lidar_sock = self.create_device_socket(op.OUSTER_LIDAR_PORT)
         self._imu_sock = self.create_device_socket(op.OUSTER_IMU_PORT)
+        # Our own bound addresses: on loopback (device_ip == host_ip,
+        # single-namespace E2E) the default destination 7502 is our own
+        # lidar socket, so our early packets echo back to us. The
+        # auto-discover loop must never treat those as driver traffic.
+        self._own_addrs = {self._lidar_sock.getsockname(),
+                           self._imu_sock.getsockname()}
 
         self.get_logger().info(
             f'Ouster emulator sockets: HTTP {op.OUSTER_HTTP_PORT} (control), '
@@ -280,6 +286,9 @@ class OusterEmulatorNode(UdpEmulatorBase):
                 except OSError:
                     continue
                 src_ip, src_port = addr[0], addr[1]
+                # Ignore our own echoed packets (loopback E2E)
+                if (src_ip, src_port) in self._own_addrs:
+                    continue
                 # Only trust packets from the configured host
                 if src_ip != self._host_ip:
                     continue

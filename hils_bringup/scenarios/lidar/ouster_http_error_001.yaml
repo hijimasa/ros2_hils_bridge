@@ -44,5 +44,5 @@ expectations:
   - type: topic_alive
     topic: /ouster/points
   - type: process_alive
-    node: ouster_ros
+    node: os_driver
     expected: true

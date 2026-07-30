@@ -359,6 +359,11 @@ class ScenarioOracle(Node):
     def shutdown_observation(self):
         self._stop_recorders()
         self._obs_executor.shutdown(timeout_sec=2.0)
+        # Join the spin thread before tearing the context down: without
+        # this, destroying the node/context can race the still-running
+        # executor in the C++ layer ("terminate called without an
+        # active exception" abort after the verdict was already out).
+        self._obs_thread.join(timeout=3.0)
         self._recorder.destroy_node()
         rclpy.shutdown(context=self._obs_context)
 

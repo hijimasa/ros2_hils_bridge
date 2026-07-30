@@ -130,15 +130,33 @@ class VelodyneEmulatorNode(UdpEmulatorBase):
             ParameterDescriptor(
                 description='Drop points outside VLP-16 vertical FOV (-15 to +15 deg)'))
 
+        # Source-side bind ports. A real VLP-16 sends from 2368/8308,
+        # but when emulator and driver share one network namespace
+        # (loopback E2E) the driver's listen socket needs 2368 for
+        # itself - bind the emulator elsewhere (0 = ephemeral). The
+        # destination ports stay 2368/8308 regardless; velodyne_driver
+        # filters by source IP only.
+        self.declare_parameter('bind_data_port', VLP16_DATA_PORT,
+            ParameterDescriptor(
+                description='Local bind port for the data socket '
+                            '(default 2368 like the real sensor; 0 = '
+                            'ephemeral, for single-namespace E2E).'))
+        self.declare_parameter('bind_position_port', VLP16_POSITION_PORT,
+            ParameterDescriptor(
+                description='Local bind port for the position socket '
+                            '(default 8308; 0 = ephemeral).'))
+
         self.add_on_set_parameters_callback(self._on_velodyne_param_change)
 
         # Create UDP sockets via base class
-        self._data_sock = self.create_device_socket(VLP16_DATA_PORT)
-        self._position_sock = self.create_device_socket(VLP16_POSITION_PORT)
+        bind_data = self.get_parameter('bind_data_port').value
+        bind_position = self.get_parameter('bind_position_port').value
+        self._data_sock = self.create_device_socket(bind_data)
+        self._position_sock = self.create_device_socket(bind_position)
 
         self.get_logger().info(
-            f'UDP sockets bound: data={VLP16_DATA_PORT}, '
-            f'position={VLP16_POSITION_PORT}')
+            f'UDP sockets bound: data={bind_data}, '
+            f'position={bind_position}')
 
         # State
         self._frame_count = 0

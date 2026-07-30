@@ -30,8 +30,11 @@ SCENARIO="$(ros2 pkg prefix hils_bringup)/share/hils_bringup/scenarios/gps/gps_c
 PIDS=()
 
 cleanup() {
+    # setsid gives each component its own process group; kill the whole
+    # group so ros2 run/launch wrappers cannot leave orphan nodes that
+    # confuse the next E2E run (stale scenario_runner services).
     for pid in "${PIDS[@]}"; do
-        kill "$pid" 2>/dev/null
+        kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null
     done
     wait 2>/dev/null
 }
@@ -68,7 +71,7 @@ else
 fi
 
 # 2. Simulation source: 5 Hz NavSatFix
-python3 - > "$WORK/fix_pub.log" 2>&1 <<'EOF' &
+setsid python3 - > "$WORK/fix_pub.log" 2>&1 <<'EOF' &
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import NavSatFix, NavSatStatus
@@ -92,11 +95,11 @@ EOF
 PIDS+=($!)
 
 # 3. Emulator bridge and real driver
-ros2 run hils_bridge_gps_nmea0183 gps_bridge_node --ros-args \
+setsid ros2 run hils_bridge_gps_nmea0183 gps_bridge_node --ros-args \
     -p serial_port:="$WORK/ttyBRIDGE" -p baudrate:=9600 \
     > "$WORK/gps_bridge.log" 2>&1 &
 PIDS+=($!)
-ros2 run nmea_navsat_driver nmea_serial_driver --ros-args \
+setsid ros2 run nmea_navsat_driver nmea_serial_driver --ros-args \
     -p port:="$WORK/ttyDRIVER" -p baud:=9600 \
     > "$WORK/nmea_driver.log" 2>&1 &
 PIDS+=($!)
@@ -130,7 +133,7 @@ EOF
 echo '[e2e] normal path up, starting oracle + runner'
 
 # 4. Oracle (judges) and runner (injects)
-ros2 run hils_bridge_base scenario_oracle --ros-args \
+setsid ros2 run hils_bridge_base scenario_oracle --ros-args \
     -p scenario_file:="$SCENARIO" \
     -p observe_domain_id:="$OBSERVE_DOMAIN" \
     -p output_dir:="$WORK/reports" \
@@ -138,7 +141,7 @@ ros2 run hils_bridge_base scenario_oracle --ros-args \
 ORACLE_PID=$!
 PIDS+=($ORACLE_PID)
 sleep 3
-ros2 run hils_bridge_base scenario_runner --ros-args \
+setsid ros2 run hils_bridge_base scenario_runner --ros-args \
     -p scenario_file:="$SCENARIO" > "$WORK/runner.log" 2>&1 &
 PIDS+=($!)
 
