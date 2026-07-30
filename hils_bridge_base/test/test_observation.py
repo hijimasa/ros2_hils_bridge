@@ -217,8 +217,7 @@ def test_diag_level_bad_expected():
 # -- robustness --
 
 def test_unknown_type_skipped_not_failed():
-    v = run_one({'type': 'invalid_message_not_published',
-                 'topic': '/fix'})
+    v = run_one({'type': 'crystal_ball_prediction', 'topic': '/fix'})
     assert v.status == SKIP
     assert v.passed
 
@@ -243,7 +242,7 @@ def make_report(tmp_path):
           'after_event_sec': 18.0},
          {'type': 'topic_resume', 'topic': '/scan', 'within_sec': 1.0,
           'after_event_sec': 10.0},
-         {'type': 'invalid_message_not_published', 'topic': '/fix'}],
+         {'type': 'crystal_ball_prediction', 'topic': '/fix'}],
         arrivals_by_topic={'/scan': INTERRUPTED},
         node_names=[], default_ref=10.0, t_start=0.0, t_end=30.0)
     return build_report(
@@ -282,3 +281,91 @@ def test_junit_xml_structure(tmp_path):
     cases = root.findall('testcase')
     assert len(cases) == 3
     assert cases[1].find('failure') is not None
+
+
+# -- invalid_message_not_published --
+
+def _eval_content(exp, samples, t_end=30.0):
+    exp = {'type': 'invalid_message_not_published',
+           'topic': '/fix', 'field': 'latitude', **exp}
+    return evaluate([exp], arrivals_by_topic={}, node_names=[],
+                    default_ref=10.0, t_start=0.0, t_end=t_end,
+                    contents_by_field={('/fix', 'latitude'): samples})[0]
+
+
+def test_content_pass_within_bounds():
+    v = _eval_content({'min': -90.0, 'max': 90.0},
+                      [(1.0, 35.6), (2.0, 35.7), (3.0, -10.0)])
+    assert v.status == PASS
+    assert '3 messages' in v.detail
+
+
+def test_content_fail_above_max():
+    v = _eval_content({'min': -90.0, 'max': 90.0},
+                      [(1.0, 35.6), (12.5, 123.4)])
+    assert v.status == FAIL
+    assert 't=12.50s' in v.detail and 'max' in v.detail
+
+
+def test_content_fail_below_min():
+    v = _eval_content({'min': 0.0}, [(5.0, -1.0)])
+    assert v.status == FAIL
+
+
+def test_content_nan_invalid_by_default():
+    v = _eval_content({}, [(1.0, float('nan'))])
+    assert v.status == FAIL
+    assert 'non-finite' in v.detail
+
+
+def test_content_nan_allowed_when_opted_in():
+    v = _eval_content({'allow_nan': True},
+                      [(1.0, float('nan')), (2.0, 1.0)])
+    assert v.status == PASS
+
+
+def test_content_non_numeric_fails():
+    v = _eval_content({}, [(1.0, 'abc')])
+    assert v.status == FAIL
+    assert 'non-numeric' in v.detail
+
+
+def test_content_empty_window_passes():
+    v = _eval_content({'min': 0.0}, [])
+    assert v.status == PASS
+    assert 'no messages' in v.detail
+
+
+def test_content_window_filters_samples():
+    # invalid sample outside [from_sec, to_sec] must be ignored
+    v = _eval_content({'max': 10.0, 'from_sec': 5.0, 'to_sec': 20.0},
+                      [(1.0, 999.0), (6.0, 1.0)])
+    assert v.status == PASS
+
+
+def test_content_missing_field_is_error():
+    v = _eval_content({}, [(1.0, None)])
+    assert v.status == ERROR
+    assert 'not found' in v.detail
+
+
+def test_content_missing_topic_or_field_key_is_error():
+    v = evaluate([{'type': 'invalid_message_not_published',
+                   'topic': '/fix'}],
+                 arrivals_by_topic={}, node_names=[], default_ref=0.0,
+                 t_start=0.0, t_end=10.0)[0]
+    assert v.status == ERROR
+
+
+def test_extract_field_dotted_path():
+    from hils_bridge_base.observation.expectations import extract_field
+
+    class Leaf:
+        z = 3.5
+
+    class Root:
+        pose = Leaf()
+
+    assert extract_field(Root(), 'pose.z') == 3.5
+    assert extract_field(Root(), 'pose.missing') is None
+    assert extract_field(Root(), 'nope') is None

@@ -103,12 +103,18 @@ class ScenarioOracle(Node):
             e['topic'] for e in exps
             if e.get('type') == 'maximum_message_age'
             and isinstance(e.get('topic'), str)})
+        content_topics = {}
+        for e in exps:
+            if e.get('type') == 'invalid_message_not_published' and \
+                    isinstance(e.get('topic'), str) and \
+                    isinstance(e.get('field'), str):
+                content_topics.setdefault(e['topic'], set()).add(e['field'])
         watch_diag = any(e.get('type') == 'diagnostic_level' for e in exps)
         self._obs_context = rclpy.Context()
         rclpy.init(context=self._obs_context, domain_id=observe_domain)
         self._recorder = TopicRecorder(
             topics, context=self._obs_context, age_topics=age_topics,
-            watch_diagnostics=watch_diag)
+            content_topics=content_topics, watch_diagnostics=watch_diag)
         self._obs_executor = SingleThreadedExecutor(
             context=self._obs_context)
         self._obs_executor.add_node(self._recorder)
@@ -286,6 +292,9 @@ class ScenarioOracle(Node):
         diagnostics_rel = [
             (round(t - start, 3), name, level)
             for t, name, level in self._recorder.diagnostics()]
+        contents_rel = {
+            key: [(round(t - start, 3), value) for t, value in entries]
+            for key, entries in self._recorder.contents().items()}
         node_names = self._recorder.node_names()
 
         verdicts = evaluate(
@@ -295,7 +304,8 @@ class ScenarioOracle(Node):
             default_ref=self._default_ref(),
             t_start=0.0, t_end=t_end,
             ages_by_topic=ages_rel,
-            diagnostics=diagnostics_rel)
+            diagnostics=diagnostics_rel,
+            contents_by_field=contents_rel)
 
         observations = {
             'window_sec': round(t_end, 3),

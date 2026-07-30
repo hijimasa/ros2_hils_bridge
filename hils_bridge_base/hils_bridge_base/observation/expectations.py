@@ -44,6 +44,21 @@ Supported expectation types (scenario YAML `expectations:` entries):
       within_sec: 3.0
       after_event_sec: 10.0
 
+    - type: invalid_message_not_published
+      # Content inspection (docs 12.1: corrupted input must never be
+      # republished as valid data): every observed value of `field`
+      # must stay inside the given bounds and be finite.
+      topic: /fix
+      field: latitude            # dotted path into the message
+      min: -90.0                 # optional lower bound
+      max: 90.0                  # optional upper bound
+      allow_nan: false           # NaN/inf count as invalid (default)
+      from_sec: 0.0              # optional evaluation window
+      to_sec: null
+      NOTE: an empty window PASSES - absence of messages is absence of
+      invalid data; pair with topic_alive/topic_resume to require
+      traffic.
+
 Unknown types are reported as SKIPPED, never as failures, so scenario
 files may carry expectations for oracle features that ship later.
 """
@@ -58,7 +73,8 @@ ERROR = 'error'
 
 SUPPORTED_TYPES = ('topic_timeout', 'topic_resume', 'topic_alive',
                    'node_alive', 'process_alive',
-                   'maximum_message_age', 'diagnostic_level')
+                   'maximum_message_age', 'diagnostic_level',
+                   'invalid_message_not_published')
 
 # diagnostic_msgs/DiagnosticStatus levels
 _DIAG_LEVELS = {'ok': 0, 'warn': 1, 'warn_or_error': 1, 'error': 2,
@@ -220,11 +236,70 @@ def eval_diagnostic_level(exp: dict, diagnostics: List[tuple], ref: float,
                   f'(worst observed level {worst})')
 
 
+def extract_field(msg, path: str):
+    """Follow a dotted field path into a message-like object.
+
+    Returns the leaf value, or None if any segment is missing (the
+    evaluator reports that as a spec error). Lives here rather than in
+    the recorder so it stays unit-testable without rclpy.
+    """
+    value = msg
+    for part in path.split('.'):
+        value = getattr(value, part, None)
+        if value is None:
+            return None
+    return value
+
+
+def eval_invalid_not_published(exp: dict, samples: List[tuple],
+                               t_start: float, t_end: float) -> tuple:
+    """samples: [(scenario_time, value), ...] for (topic, field)."""
+    import math
+
+    lo_bound = _num(exp, 'min', None)
+    hi_bound = _num(exp, 'max', None)
+    allow_nan = exp.get('allow_nan', False)
+    if not isinstance(allow_nan, bool):
+        raise ValueError('allow_nan must be a boolean')
+    lo = _num(exp, 'from_sec', t_start)
+    hi = _num(exp, 'to_sec', None)
+    hi = t_end if hi is None else hi
+
+    window = [(t, v) for t, v in samples if lo <= t <= hi]
+    if not window:
+        return PASS, (f'no messages in window [{lo:.2f}, {hi:.2f}]s - '
+                      f'no invalid data published')
+
+    missing = [t for t, v in window if v is None]
+    if missing:
+        raise ValueError(
+            f'field {exp.get("field")!r} not found on {exp.get("topic")} '
+            f'({len(missing)} of {len(window)} messages)')
+
+    def invalid_reason(v):
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return f'non-numeric value {v!r}'
+        if not math.isfinite(v):
+            return None if allow_nan else f'non-finite value {v}'
+        if lo_bound is not None and v < lo_bound:
+            return f'value {v} < min {lo_bound}'
+        if hi_bound is not None and v > hi_bound:
+            return f'value {v} > max {hi_bound}'
+        return None
+
+    for t, v in window:
+        reason = invalid_reason(v)
+        if reason:
+            return FAIL, f'invalid message at t={t:.2f}s: {reason}'
+    return PASS, (f'{len(window)} messages inspected, all values valid')
+
+
 def evaluate(expectations: List[dict], *, arrivals_by_topic: dict,
              node_names: List[str], default_ref: float,
              t_start: float, t_end: float,
              ages_by_topic: dict = None,
-             diagnostics: List[tuple] = None) -> List[Verdict]:
+             diagnostics: List[tuple] = None,
+             contents_by_field: dict = None) -> List[Verdict]:
     """Evaluate all expectations against recorded observations.
 
     Args:
@@ -235,6 +310,8 @@ def evaluate(expectations: List[dict], *, arrivals_by_topic: dict,
         default_ref: reference time for expectations without
             after_event_sec (the first event's actual time).
         t_start, t_end: observed scenario window.
+        contents_by_field: {(topic, field): [(scenario_time, value)]}
+            for invalid_message_not_published expectations.
     """
     verdicts = []
     for i, exp in enumerate(expectations):
@@ -268,6 +345,16 @@ def evaluate(expectations: List[dict], *, arrivals_by_topic: dict,
                 ref = _num(exp, 'after_event_sec', default_ref)
                 status, detail = eval_diagnostic_level(
                     exp, diagnostics or [], ref, t_end)
+            elif exp_type == 'invalid_message_not_published':
+                topic = exp.get('topic')
+                field = exp.get('field')
+                if not isinstance(topic, str) or not topic:
+                    raise ValueError('topic must be a non-empty string')
+                if not isinstance(field, str) or not field:
+                    raise ValueError('field must be a non-empty string')
+                samples = (contents_by_field or {}).get((topic, field), [])
+                status, detail = eval_invalid_not_published(
+                    exp, samples, t_start, t_end)
             elif exp_type is None:
                 status, detail = ERROR, 'expectation has no "type" key'
             else:

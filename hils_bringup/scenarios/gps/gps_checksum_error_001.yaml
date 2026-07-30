@@ -30,3 +30,16 @@ expectations:
   - type: process_alive
     node: nmea
     expected: true
+  # Content inspection (docs 12.1): every /fix that IS published must
+  # carry a sane position - corrupted sentences must never surface as
+  # plausible-looking data.
+  - type: invalid_message_not_published
+    topic: /fix
+    field: latitude
+    min: -90.0
+    max: 90.0
+  - type: invalid_message_not_published
+    topic: /fix
+    field: longitude
+    min: -180.0
+    max: 180.0
