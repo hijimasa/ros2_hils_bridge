@@ -57,6 +57,14 @@ class SerialBridgeBase(Node):
         self.declare_parameter('max_hz', default_max_hz,
             ParameterDescriptor(
                 description='Maximum output rate in Hz.'))
+        # A peer that stops reading (e.g. wrong firmware on a USB CDC
+        # device) would otherwise block write() forever inside the
+        # executor and silently freeze the whole node.
+        self.declare_parameter('write_timeout_sec', 1.0,
+            ParameterDescriptor(
+                description='Serial write timeout. A timed-out write is '
+                            'logged and dropped instead of blocking the '
+                            'node forever.'))
 
         self.add_on_set_parameters_callback(self._on_param_change)
 
@@ -64,7 +72,9 @@ class SerialBridgeBase(Node):
         port = self.get_parameter('serial_port').value
         baudrate = self.get_parameter('baudrate').value
         try:
-            self._serial = serial.Serial(port, baudrate, timeout=0)
+            self._serial = serial.Serial(
+                port, baudrate, timeout=0,
+                write_timeout=self.get_parameter('write_timeout_sec').value)
             self.get_logger().info(f'Opened serial port: {port} @ {baudrate} baud')
         except serial.SerialException as e:
             self.get_logger().error(f'Failed to open serial port {port}: {e}')

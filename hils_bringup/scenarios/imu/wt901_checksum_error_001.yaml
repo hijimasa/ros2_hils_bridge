@@ -1,0 +1,32 @@
+# WT901 checksum fault test (docs sections 7.5, 10.3): binary frames stay
+# well-formed but carry an invalid sum checksum for 10 s.
+# Expected driver behavior (witmotion_ros enables packet validation):
+# invalid frames are rejected (no /imu published from them), the driver
+# does not crash, and /imu resumes after the fault clears.
+scenario:
+  id: wt901_checksum_error_001
+  description: WT901 binary checksum invalidation during streaming
+  target: /hils_imu_bridge
+  seed: 7002
+
+events:
+  - at_sec: 10.0
+    action: inject_fault
+    fault:
+      fault_id: bad_checksum
+      fault_type: wt901_checksum
+      duration_sec: 10.0
+      parameters:
+        probability: 1.0
+
+expectations:
+  - type: topic_timeout
+    topic: /imu
+    within_sec: 3.0
+  - type: topic_resume
+    topic: /imu
+    within_sec: 5.0
+    after_event_sec: 20.0
+  - type: process_alive
+    node: witmotion
+    expected: true
