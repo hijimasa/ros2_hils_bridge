@@ -1,0 +1,28 @@
+/**:
+  ros__parameters:
+    # PointCloud2 topic from the simulation / rosbag / synthetic source
+    pointcloud_topic: "/sim_points"
+
+    # VSSP TCP port (real sensor: 10940)
+    tcp_port: 10940
+
+    # Motor revolutions per second = frame rate at interlace (1,1)
+    scan_rate_hz: 10.0
+
+    # Scan geometry (YVT-35LX: horizontal 210 deg, vertical 40 deg)
+    horizontal_fov_deg: 210.0
+    vertical_fov_min_deg: -20.0
+    vertical_fov_max_deg: 20.0
+
+    # Identification reported by the VER command
+    serial_number: "H0000001"
+    firmware_version: "1.2.0-hils"
+
+    # Network config
+    # device_ip: IP assigned to the interface acting as the emulated YVT-35LX
+    #            (loopback E2E: 127.0.0.1)
+    # host_ip: Robot PC IP where urg3d_node2 runs
+    # network_interface: interface to bind (e.g. "eth1"). Empty = auto.
+    device_ip: "192.168.0.10"
+    host_ip: "192.168.0.15"
+    network_interface: ""

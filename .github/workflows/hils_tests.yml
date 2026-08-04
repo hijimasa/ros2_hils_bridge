@@ -27,20 +27,34 @@ jobs:
             ros-jazzy-sensor-msgs-py ros-jazzy-diagnostic-msgs \
             ros-jazzy-nmea-navsat-driver socat \
             ros-jazzy-velodyne-driver ros-jazzy-velodyne-pointcloud \
-            ros-jazzy-ouster-ros
+            ros-jazzy-ouster-ros \
+            ros-jazzy-laser-proc git
+
+      - name: Check out urg3d_node2 (Hokuyo YVT-35LX driver, source only)
+        run: |
+          git clone --depth 1 --recurse-submodules \
+            https://github.com/Hokuyo-aut/urg3d_node2 src/urg3d_node2
 
       - name: Build
         run: |
           source /opt/ros/jazzy/setup.bash
           colcon build --packages-up-to \
             hils_bridge_base hils_bridge_gps_nmea0183 hils_bringup \
-            hils_bridge_lidar_velodyne_vlp16 hils_bridge_lidar_ouster_os1
+            hils_bridge_lidar_velodyne_vlp16 hils_bridge_lidar_ouster_os1 \
+            hils_bridge_lidar_hokuyo_yvt35lx urg3d_node2
 
       - name: Unit tests
         run: |
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
           cd src/ros2_hils_bridge/hils_bridge_base
+          python3 -m pytest test -q
+
+      - name: Unit tests (VSSP protocol encoder)
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          cd src/ros2_hils_bridge/hils_bridge_lidar/hils_bridge_lidar_hokuyo_yvt35lx
           python3 -m pytest test -q
 
       - name: GPS fault-injection E2E (real nmea_navsat_driver)
@@ -66,6 +80,18 @@ jobs:
           source install/setup.bash
           export E2E_REPORT_DIR=$GITHUB_WORKSPACE/e2e_reports
           bash src/ros2_hils_bridge/tools/run_ouster_e2e.sh
+
+      # Green path only. The corruption scenario
+      # (E2E_SCENARIO=yvt35lx_stream_fault_001) currently fails by
+      # design: it is the regression for the urg3d_node2 segfault
+      # documented in policy doc 22.5.
+      - name: Hokuyo YVT-35LX fault-injection E2E (real urg3d_node2, loopback TCP)
+        if: always()
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          export E2E_REPORT_DIR=$GITHUB_WORKSPACE/e2e_reports
+          bash src/ros2_hils_bridge/tools/run_yvt35lx_e2e.sh
 
       - name: Upload reports
         if: always()

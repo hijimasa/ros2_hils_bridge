@@ -1,0 +1,43 @@
+# YVT-35LX VSSP stream blackout test (docs sections 7.3, 8.1): the
+# measurement stream goes fully silent for 3 s while the TCP session
+# and the command channel stay up, then recovers.
+# Expected driver behavior: 3 s of silence stays under urg3d_node2's
+# error_limit (4 errors counted at 1/s), so the driver must resume
+# publishing without reconnecting and without crashing.
+scenario:
+  id: yvt35lx_blackout_001
+  description: YVT-35LX measurement stream blackout on the VSSP TCP link
+  target: /hils_yvt35lx_emulator
+  seed: 6002
+
+events:
+  - at_sec: 10.0
+    action: inject_fault
+    fault:
+      fault_id: stream_blackout
+      fault_type: drop
+      target: data
+      duration_sec: 3.0
+      parameters:
+        probability: 1.0
+
+  - at_sec: 25.0
+    action: clear_all_faults
+
+expectations:
+  - type: process_alive
+    node: urg3d_node2
+    expected: true
+  - type: topic_timeout
+    topic: /hokuyo_cloud2
+    after_event_sec: 10.0
+    within_sec: 2.0
+    min_gap_sec: 1.0
+  - type: topic_resume
+    topic: /hokuyo_cloud2
+    after_event_sec: 13.0
+    within_sec: 10.0
+  # The auxiliary stream is a separate channel and must survive intact.
+  - type: topic_alive
+    topic: /imu
+    max_gap_sec: 3.0

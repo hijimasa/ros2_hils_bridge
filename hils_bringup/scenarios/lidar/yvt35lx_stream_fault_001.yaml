@@ -1,0 +1,65 @@
+# YVT-35LX VSSP stream fault test (docs sections 7.3, 7.5): byte
+# corruption on the TCP stream, then a full 3-second stream blackout,
+# then recovery.
+# Expected driver behavior: urg3d_library resynchronizes on the "VSSP"
+# magic during corruption (gaps allowed, no crash); the 3 s blackout
+# stays under urg3d_node2's error_limit (4 errors at 1/s) so the driver
+# resumes without reconnecting; full recovery after clear.
+#
+# KNOWN OUTCOME (2026-08-04, policy 22.5): urg3d_node2 does NOT meet
+# this expectation — it segfaults inside
+# Urg3dSensor::setCommonMeasurementData a few seconds into the
+# corruption window, so all four expectations FAIL. The scenario is
+# kept as the machine-checkable regression for that defect: it should
+# start passing once the driver validates range-header fields before
+# using them. Use yvt35lx_blackout_001 for the green-path E2E.
+scenario:
+  id: yvt35lx_stream_fault_001
+  description: YVT-35LX VSSP stream corruption and blackout on TCP
+  target: /hils_yvt35lx_emulator
+  seed: 6001
+
+events:
+  - at_sec: 10.0
+    action: inject_fault
+    fault:
+      fault_id: stream_corruption
+      fault_type: corrupt
+      target: data
+      duration_sec: 10.0
+      parameters:
+        probability: 0.2
+        mode: bit_flip
+        num_bytes: 4
+
+  - at_sec: 30.0
+    action: inject_fault
+    fault:
+      fault_id: stream_blackout
+      fault_type: drop
+      target: data
+      duration_sec: 3.0
+      parameters:
+        probability: 1.0
+
+  - at_sec: 45.0
+    action: clear_all_faults
+
+expectations:
+  - type: process_alive
+    node: urg3d_node2
+    expected: true
+  # Corruption may eat multi-packet stretches (corrupted VSSP length
+  # fields), but frames must keep coming through the 10 s window.
+  - type: topic_alive
+    topic: /hokuyo_cloud2
+    max_gap_sec: 6.0
+  # The stream must come back promptly after the 3 s blackout.
+  - type: topic_resume
+    topic: /hokuyo_cloud2
+    after_event_sec: 30.0
+    within_sec: 10.0
+  # Auxiliary stream (imu) is untouched by the data-channel faults.
+  - type: topic_alive
+    topic: /imu
+    max_gap_sec: 6.0
