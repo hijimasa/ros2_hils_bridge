@@ -28,7 +28,7 @@ jobs:
             ros-jazzy-nmea-navsat-driver socat \
             ros-jazzy-velodyne-driver ros-jazzy-velodyne-pointcloud \
             ros-jazzy-ouster-ros \
-            ros-jazzy-laser-proc git
+            ros-jazzy-laser-proc ros-jazzy-diagnostic-updater git
 
       - name: Check out urg3d_node2 (Hokuyo YVT-35LX driver, source only)
         run: |

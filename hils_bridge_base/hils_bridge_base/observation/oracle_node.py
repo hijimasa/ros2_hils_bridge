@@ -47,6 +47,11 @@ from hils_bridge_base.reporting import (
 )
 from hils_bridge_base.scenario import load_scenario_file
 
+# Drop a runner-state request that never gets a reply, and retry.
+CALL_TIMEOUT_SEC = 5.0
+# How often to explain that the scenario clock is not locked yet.
+IDLE_WARN_PERIOD_SEC = 10.0
+
 
 class ScenarioOracle(Node):
     def __init__(self):
@@ -138,6 +143,9 @@ class ScenarioOracle(Node):
         self._state_client = self.create_client(
             GetScenarioState, f'{runner_ns}/get_scenario_state')
         self._poll_busy = False
+        self._call_started = 0.0
+        self._call_future = None
+        self._last_idle_warn = 0.0
         self._start_mono = None       # monotonic time of scenario t=0
         self._runner_events = []      # events list from the runner
         self._finished_seen = False
@@ -219,11 +227,46 @@ class ScenarioOracle(Node):
         if time.monotonic() > self._deadline_mono:
             self._finish(timed_out=True)
             return
-        if self._poll_busy or not self._state_client.service_is_ready():
+        if self._poll_busy:
+            # A request that never gets a reply must not wedge polling
+            # for the whole max_wait_sec: that turns a transient
+            # discovery problem into a scenario with no clock, where
+            # every window evaluates as empty and every timing
+            # expectation fails. It happens when the client matches a
+            # server that is gone, or one of several servers sharing the
+            # runner's name in a domain that other runs also use.
+            if time.monotonic() - self._call_started > CALL_TIMEOUT_SEC:
+                self._state_client.remove_pending_request(self._call_future)
+                self._poll_busy = False
+                self.get_logger().warning(
+                    f'runner state request got no reply within '
+                    f'{CALL_TIMEOUT_SEC:.0f}s; retrying')
             return
+        if not self._state_client.service_is_ready():
+            self._warn_idle('scenario runner service not discovered yet')
+            return
+        if self._start_mono is None:
+            self._warn_idle('runner found but not running yet')
         self._poll_busy = True
-        future = self._state_client.call_async(GetScenarioState.Request())
-        future.add_done_callback(self._on_state)
+        self._call_started = time.monotonic()
+        self._call_future = self._state_client.call_async(
+            GetScenarioState.Request())
+        self._call_future.add_done_callback(self._on_state)
+
+    def _warn_idle(self, reason: str):
+        """Say why the clock is not locked yet, at most every 10 s.
+
+        Without this a wedged oracle logs nothing at all between startup
+        and its timeout verdict, which makes a CI failure undiagnosable
+        from the artifacts alone.
+        """
+        now = time.monotonic()
+        if now - self._last_idle_warn < IDLE_WARN_PERIOD_SEC:
+            return
+        self._last_idle_warn = now
+        waited = now + self.get_parameter('max_wait_sec').value \
+            - self._deadline_mono
+        self.get_logger().warning(f'{reason} ({waited:.0f}s elapsed)')
 
     def _on_state(self, future):
         self._poll_busy = False

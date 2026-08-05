@@ -19,15 +19,24 @@
 # Requires: built ws with hils_bridge_base / hils_bridge_interfaces /
 # hils_bridge_lidar_hokuyo_yvt35lx / hils_bringup, plus urg3d_node2
 # built from source (git clone --recursive
-# https://github.com/Hokuyo-aut/urg3d_node2, needs ros-<distro>-laser-proc).
+# https://github.com/Hokuyo-aut/urg3d_node2, needs ros-<distro>-laser-proc
+# and ros-<distro>-diagnostic-updater).
 #
 # Exit code: the oracle's verdict (0 = all expectations pass).
 set -u
 
 export ROS_AUTOMATIC_DISCOVERY_RANGE="${E2E_DISCOVERY_RANGE:-LOCALHOST}"
+# Own domain unless one is already chosen. In CI this script runs after
+# other E2Es in the same job, and their nodes are not always gone by the
+# time we start (drivers have been observed alive minutes later). A
+# leftover hils_scenario_runner shares our runner's node and service
+# names, so the oracle's state client can match the wrong one, never get
+# a reply, and report every timing expectation as failed. A private
+# domain makes that impossible.
+export ROS_DOMAIN_ID="${E2E_DOMAIN_ID:-${ROS_DOMAIN_ID:-71}}"
 
 WORK=$(mktemp -d)
-OBSERVE_DOMAIN="${ROS_DOMAIN_ID:-0}"
+OBSERVE_DOMAIN="$ROS_DOMAIN_ID"
 SCENARIO_NAME="${E2E_SCENARIO:-yvt35lx_blackout_001}"
 SCENARIO="$(ros2 pkg prefix hils_bringup)/share/hils_bringup/scenarios/lidar/${SCENARIO_NAME}.yaml"
 PIDS=()
@@ -46,7 +55,15 @@ cleanup() {
     for pid in "${PIDS[@]}"; do
         kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null
     done
+    # urg3d_node2 does not always honour SIGTERM: its scan thread can be
+    # blocked on the socket, so the join in the destructor never
+    # returns. Orphans have been seen alive minutes after their run.
     pkill -f "[u]rg3d_node2_node" 2>/dev/null
+    for _ in 1 2 3 4 5; do
+        pgrep -f "[u]rg3d_node2_node" >/dev/null 2>&1 || break
+        sleep 1
+    done
+    pkill -9 -f "[u]rg3d_node2_node" 2>/dev/null
     wait 2>/dev/null
 }
 trap cleanup EXIT
