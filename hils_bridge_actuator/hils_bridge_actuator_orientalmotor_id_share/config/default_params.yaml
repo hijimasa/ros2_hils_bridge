@@ -1,0 +1,13 @@
+hils_oms_bridge:
+  ros__parameters:
+    # create_pty: true creates a virtual serial device (PTY) at
+    # serial_port (SILS, no adapter). Set false and point serial_port
+    # at /dev/ttyUSBx for a real FT234X cross-connection (HILS).
+    serial_port: /tmp/ttyUSB_BlvrMotor
+    create_pty: true
+    baudrate: 230400            # Must match the daemon's BAUDRATE
+    motor_types: "BLVR:400,BLVR:400"   # TYPE[:KEY] per motor; sets the motor count
+    joint_names: [left_wheel_joint, right_wheel_joint]
+    gear_ratios: [1.0]          # Empty = all 1.0 / 1 = uniform / N = per motor
+    joint_states_topic: /joint_states       # subscribed (output-shaft feedback)
+    joint_commands_topic: /joint_commands   # published (output-shaft commands)

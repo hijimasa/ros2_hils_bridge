@@ -41,7 +41,8 @@ jobs:
           colcon build --packages-up-to \
             hils_bridge_base hils_bridge_gps_nmea0183 hils_bringup \
             hils_bridge_lidar_velodyne_vlp16 hils_bridge_lidar_ouster_os1 \
-            hils_bridge_lidar_hokuyo_yvt35lx urg3d_node2
+            hils_bridge_lidar_hokuyo_yvt35lx urg3d_node2 \
+            hils_bridge_actuator_orientalmotor_id_share
 
       - name: Unit tests
         run: |
@@ -55,6 +56,13 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
           cd src/ros2_hils_bridge/hils_bridge_lidar/hils_bridge_lidar_hokuyo_yvt35lx
+          python3 -m pytest test -q
+
+      - name: Unit tests (OrientalMotor ID-share protocol)
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          cd src/ros2_hils_bridge/hils_bridge_actuator/hils_bridge_actuator_orientalmotor_id_share
           python3 -m pytest test -q
 
       - name: GPS fault-injection E2E (real nmea_navsat_driver)

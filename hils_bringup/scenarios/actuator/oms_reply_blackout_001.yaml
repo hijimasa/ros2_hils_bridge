@@ -1,0 +1,40 @@
+# OrientalMotor ID-share reply blackout test: every Modbus reply
+# (status channel) is dropped for 3 s while the daemon keeps polling,
+# then service resumes. To the master this is a motor that stopped
+# answering mid-bus -- the classic loose-connector fault.
+# Expected daemon behavior: communication timeouts are reported, the
+# daemon does not crash, and polling recovers without a restart. The
+# node publishes /joint_commands on each parsed 0x17 poll, and an RTU
+# master blocks on each reply (timeout per transaction), so the
+# command topic stalls together with the unanswered bus and resumes
+# with the replies.
+scenario:
+  id: oms_reply_blackout_001
+  description: ID-share Modbus reply blackout on the motor bus
+  target: /hils_oms_bridge
+  seed: 7101
+
+events:
+  - at_sec: 10.0
+    action: inject_fault
+    fault:
+      fault_id: reply_blackout
+      fault_type: drop
+      target: status
+      duration_sec: 3.0
+      parameters:
+        probability: 1.0
+
+  - at_sec: 20.0
+    action: clear_all_faults
+
+expectations:
+  - type: topic_timeout
+    topic: /joint_commands
+    after_event_sec: 10.0
+    within_sec: 2.0
+    min_gap_sec: 1.0
+  - type: topic_resume
+    topic: /joint_commands
+    after_event_sec: 13.0
+    within_sec: 10.0

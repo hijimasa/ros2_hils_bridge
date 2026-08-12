@@ -79,6 +79,7 @@ hils_bridge_<sensor_type>/hils_bridge_<sensor_type>_<protocol_or_vendor_series>/
 | パッケージ | 対象デバイス | 取り込み信号 | ファームウェア | 状態 |
 |-----------|------------|-------------|--------------|------|
 | `hils_bridge_actuator_servo_pwm` | RC サーボ（任意のベンダー、取り込み方向） | 制御器が出力する 50 Hz / 500–2500 us の PWM を計測 | rp2040_actuator_servo_pwm | 実装済・**動作確認済** |
+| `hils_bridge_actuator_orientalmotor_id_share` | オリエンタルモーター BLV-R / AZ（ID シェア Modbus RTU スレーブ、エミュレーション方向） | 制御器デーモンの 0x10/0x17 ポーリングに応答。指令 ↔ JointState 変換 | —（FT234X または PTY、MCU 不要） | 実装済・未検証 |
 
 ### エンコーダ
 

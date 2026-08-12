@@ -79,6 +79,7 @@ The same convention applies to the matching firmware under `firmware/rp2040_<sen
 | Package | Target Device | Captured Signal | Firmware | Status |
 |---------|--------------|-----------------|----------|--------|
 | `hils_bridge_actuator_servo_pwm` | RC servo (any vendor, capture direction) | 50 Hz / 500–2500 us servo PWM emitted by the controller | rp2040_actuator_servo_pwm | Done, **verified** |
+| `hils_bridge_actuator_orientalmotor_id_share` | OrientalMotor BLV-R / AZ (ID-share Modbus RTU slaves, emulation direction) | Answers the controller daemon's 0x10/0x17 polls; commands ↔ JointState | — (FT234X or PTY, no MCU) | Done, unverified |
 
 ### Encoder
 
