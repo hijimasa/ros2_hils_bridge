@@ -52,6 +52,9 @@ hils_bridge_<sensor_type>/hils_bridge_<sensor_type>_<protocol_or_vendor_series>/
 | `hils_bridge_lidar_livox_mid360` | Livox Mid-360 | livox_ros_driver2 | 実装済・**動作確認済** |
 | `hils_bridge_lidar_velodyne_vlp16` | Velodyne VLP-16 | velodyne_driver | 実装済・**動作確認済** |
 | `hils_bridge_lidar_ouster_os1` | Ouster OS1 | ouster_ros | 実装済・**動作確認済**（注意点あり[^ouster-note]） |
+| `hils_bridge_lidar_slamtec_rplidar_a` | SLAMTEC RPLIDAR（Aシリーズ シリアルプロトコル） | rplidar_ros | 実装済・未検証[^rplidar-note] |
+
+[^rplidar-note]: UDP ではなくシリアル（FT234X クロス接続または PTY）。`LaserScan` を購読し、ドライバの 0xA5 リクエストに応答して 5 バイトのスキャンノードをストリームする。
 
 [^ouster-note]: Ouster はエミュレータ側で HTTP REST API (port 80) を提供するため Docker では `sysctls: net.ipv4.ip_unprivileged_port_start=80` が必要。詳細は [動作確認手順書](../docs/hils_verification_guide.md#13-ouster-os1) を参照。
 

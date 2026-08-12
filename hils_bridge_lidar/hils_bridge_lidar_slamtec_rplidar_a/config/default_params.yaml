@@ -1,0 +1,14 @@
+hils_rplidar_bridge:
+  ros__parameters:
+    # create_pty: true creates a virtual serial device (PTY) at
+    # serial_port (SILS, no adapter). Set false and point serial_port
+    # at /dev/ttyUSBx for a real FT234X cross-connection (HILS).
+    serial_port: /tmp/rplidar_front
+    create_pty: true
+    baudrate: 1000000           # Must match the driver's baudrate
+    scan_topic: /scan           # subscribed (LaserScan from the simulator)
+    # Device info returned by GET_DEVICE_INFO
+    model_code: 97              # 0x61 (S2)
+    firmware_version: 280       # 0x0118 (v1.24)
+    hardware_version: 7
+    serial_number: EMULATOR00000001

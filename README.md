@@ -52,6 +52,9 @@ The same convention applies to the matching firmware under `firmware/rp2040_<sen
 | `hils_bridge_lidar_livox_mid360` | Livox Mid-360 | livox_ros_driver2 | Done, **verified** |
 | `hils_bridge_lidar_velodyne_vlp16` | Velodyne VLP-16 | velodyne_driver | Done, **verified** |
 | `hils_bridge_lidar_ouster_os1` | Ouster OS1 | ouster_ros | Done, **verified**[^ouster-note] |
+| `hils_bridge_lidar_slamtec_rplidar_a` | SLAMTEC RPLIDAR (A-series serial protocol) | rplidar_ros | Done, unverified[^rplidar-note] |
+
+[^rplidar-note]: Serial (FT234X cross-connection or PTY), not UDP: subscribes `LaserScan` and answers the driver's 0xA5 requests, streaming 5-byte scan nodes.
 
 [^ouster-note]: For Ouster, the emulator exposes HTTP REST API on port 80, so Docker needs `sysctls: net.ipv4.ip_unprivileged_port_start=80`. See the [verification guide](../docs/hils_verification_guide.md#13-ouster-os1) for details.
 
