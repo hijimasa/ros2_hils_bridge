@@ -41,6 +41,7 @@ of the spec:
 
 import math
 import struct
+import threading
 
 import numpy as np
 
@@ -280,6 +281,69 @@ class ScanGeometry:
         range_grid.reshape(-1)[cell[sel]] = range_mm[sel]
         intens_grid.reshape(-1)[cell[sel]] = inten[sel]
         return range_grid, intens_grid
+
+
+class RangeNoise:
+    """Per-spot range noise and dropout for a binned scan grid.
+
+    A real sensor's error lands on the measured distance along the beam,
+    so it is applied here - to the uint16 millimetre values that go into
+    the packet - rather than to the cartesian points coming in. Noise is
+    off unless configured, because the simulation feeding the emulator
+    usually models sensor noise already and applying it twice would
+    understate the driver's real input quality.
+
+    Applied once per revolution rather than once per incoming cloud, so
+    a static scene still produces an independent measurement per scan,
+    as a real sensor does.
+
+    Reproducible: with the same seed and the same call sequence, the
+    same measurements come out.
+    """
+
+    def __init__(self, sigma_m: float = 0.0,
+                 dropout_probability: float = 0.0, seed: int = 0):
+        self.sigma_mm = max(0.0, float(sigma_m)) * 1000.0
+        self.dropout_probability = min(1.0, max(0.0, float(dropout_probability)))
+        self._rng = np.random.default_rng(seed)
+        # apply() is called once per revolution, from each connection's
+        # streaming thread; a Generator is not thread-safe.
+        self._lock = threading.Lock()
+
+    @property
+    def enabled(self) -> bool:
+        return self.sigma_mm > 0.0 or self.dropout_probability > 0.0
+
+    def apply(self, range_grid, intensity_grid):
+        """Return (range, intensity) grids with noise and dropout applied."""
+        if not self.enabled:
+            return range_grid, intensity_grid
+
+        noisy = range_grid.astype(np.int32)
+        flat = noisy.reshape(-1)
+        hit = np.flatnonzero(flat > 0)
+        if hit.size == 0:
+            return range_grid, intensity_grid
+
+        with self._lock:
+            if self.sigma_mm > 0.0:
+                flat[hit] += np.rint(self._rng.normal(
+                    0.0, self.sigma_mm, hit.size)).astype(np.int32)
+            if self.dropout_probability > 0.0:
+                dropped = hit[
+                    self._rng.random(hit.size) < self.dropout_probability]
+                flat[dropped] = 0
+
+        # A return pushed outside the sensor's measurement range is not
+        # reported at all, as on the real device.
+        lo = int(MIN_RANGE_M * 1000.0)
+        hi = int(MAX_RANGE_M * 1000.0)
+        flat[(flat < lo) | (flat > hi)] = 0
+
+        out_range = noisy.astype(np.uint16)
+        out_intensity = np.where(out_range > 0, intensity_grid,
+                                 0).astype(np.uint16)
+        return out_range, out_intensity
 
 
 def aux_record_raw(gyro_dps=(0.0, 0.0, 0.0), accel_g=(0.0, 0.0, 1.0),

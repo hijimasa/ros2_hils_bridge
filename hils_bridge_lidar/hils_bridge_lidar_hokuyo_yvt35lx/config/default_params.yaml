@@ -14,6 +14,15 @@
     vertical_fov_min_deg: -20.0
     vertical_fov_max_deg: 20.0
 
+    # Sensor noise, applied to the range value along the beam.
+    # Off by default: the simulation feeding the emulator usually models
+    # sensor noise already, and adding it on both sides would
+    # misrepresent what the driver really sees. Enable it only when the
+    # point source is noise-free (a synthetic scene, a clean rosbag).
+    range_noise_sigma_m: 0.0     # e.g. 0.02 = 20 mm std-dev
+    dropout_probability: 0.0     # e.g. 0.01 = 1 % of spots report no echo
+    noise_seed: 0                # same seed + same input = same output
+
     # Identification reported by the VER command
     serial_number: "H0000001"
     firmware_version: "1.2.0-hils"

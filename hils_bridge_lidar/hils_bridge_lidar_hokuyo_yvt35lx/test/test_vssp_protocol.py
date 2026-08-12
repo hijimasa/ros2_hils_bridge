@@ -233,6 +233,68 @@ def test_points_outside_the_field_of_view_are_dropped():
     assert (range_grid > 0).sum() == 0
 
 
+def _grid(value_mm=5000, intensity=100):
+    ranges = np.full((vp.LINE_COUNT, vp.SPOT_COUNT), value_mm, dtype=np.uint16)
+    intensities = np.full((vp.LINE_COUNT, vp.SPOT_COUNT), intensity,
+                          dtype=np.uint16)
+    return ranges, intensities
+
+
+def test_noise_is_off_by_default_so_it_cannot_double_up_with_a_simulator():
+    noise = vp.RangeNoise()
+    assert not noise.enabled
+    ranges, intensities = _grid()
+    out_r, out_i = noise.apply(ranges, intensities)
+    assert np.array_equal(out_r, ranges)
+    assert np.array_equal(out_i, intensities)
+
+
+def test_range_noise_matches_the_requested_sigma():
+    noise = vp.RangeNoise(sigma_m=0.02, seed=7)
+    out_r, _ = noise.apply(*_grid(5000))
+    deviations = out_r.astype(np.float64) - 5000.0
+    assert abs(deviations.mean()) < 3.0          # unbiased, in mm
+    assert 15.0 < deviations.std() < 25.0        # ~20 mm requested
+
+
+def test_same_seed_reproduces_the_same_measurements():
+    a, _ = vp.RangeNoise(sigma_m=0.02, seed=42).apply(*_grid())
+    b, _ = vp.RangeNoise(sigma_m=0.02, seed=42).apply(*_grid())
+    c, _ = vp.RangeNoise(sigma_m=0.02, seed=43).apply(*_grid())
+    assert np.array_equal(a, b)
+    assert not np.array_equal(a, c)
+
+
+def test_dropout_removes_returns_and_their_intensity():
+    noise = vp.RangeNoise(dropout_probability=0.25, seed=3)
+    out_r, out_i = noise.apply(*_grid())
+    dropped = out_r == 0
+    total = out_r.size
+    assert 0.20 * total < dropped.sum() < 0.30 * total
+    # A spot with no echo must not carry an intensity either.
+    assert np.all(out_i[dropped] == 0)
+    assert np.all(out_i[~dropped] == 100)
+
+
+def test_noise_never_reports_outside_the_measurement_range():
+    # A spot at the far limit, nudged by a huge sigma, must drop out
+    # rather than wrap around or exceed the datasheet range.
+    noise = vp.RangeNoise(sigma_m=5.0, seed=11)
+    out_r, _ = noise.apply(*_grid(int(vp.MAX_RANGE_M * 1000)))
+    reported = out_r[out_r > 0]
+    assert reported.size > 0
+    assert reported.min() >= vp.MIN_RANGE_M * 1000
+    assert reported.max() <= vp.MAX_RANGE_M * 1000
+
+
+def test_noise_leaves_spots_without_echo_empty():
+    ranges, intensities = _grid()
+    ranges[0, :] = 0
+    intensities[0, :] = 0
+    out_r, _ = vp.RangeNoise(sigma_m=0.02, seed=5).apply(ranges, intensities)
+    assert np.all(out_r[0, :] == 0)
+
+
 def test_points_outside_the_measurement_range_are_dropped():
     geometry = vp.ScanGeometry()
     # Closer than 0.3 m and farther than 35 m: the real sensor reports

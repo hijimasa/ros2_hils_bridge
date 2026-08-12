@@ -138,7 +138,10 @@ class _ClientSession:
         period_ms = period * 1000.0
 
         if self.ro or self.ri:
-            range_grid, intens_grid = node.grids
+            # Fresh noise for this revolution: a real sensor measures
+            # each scan independently, so two frames of a static scene
+            # must not carry identical ranges.
+            range_grid, intens_grid = node.noise.apply(*node.grids)
             geom = node.geometry
             line_ms = period_ms / vp.LINE_COUNT
             for li in range(vp.LINE_COUNT):
@@ -194,6 +197,21 @@ class Yvt35lxEmulatorNode(UdpEmulatorBase):
             ParameterDescriptor(description='Lower vertical scan angle'))
         self.declare_parameter('vertical_fov_max_deg', 20.0,
             ParameterDescriptor(description='Upper vertical scan angle'))
+        # Sensor noise. Off by default: the simulation feeding this
+        # emulator normally models its own sensor noise, and applying it
+        # on both sides would misrepresent what the driver really sees.
+        self.declare_parameter('range_noise_sigma_m', 0.0,
+            ParameterDescriptor(
+                description='Std-dev of range noise along the beam, in '
+                            'metres. 0 = no noise.'))
+        self.declare_parameter('dropout_probability', 0.0,
+            ParameterDescriptor(
+                description='Probability that a spot reports no echo. '
+                            '0 = every spot returns.'))
+        self.declare_parameter('noise_seed', 0,
+            ParameterDescriptor(
+                description='Seed for the noise generator, so a run can '
+                            'be reproduced.'))
         self.declare_parameter('serial_number', 'H0000001',
             ParameterDescriptor(description='Emulated serial number'))
         self.declare_parameter('firmware_version', '1.2.0-hils',
@@ -203,6 +221,11 @@ class Yvt35lxEmulatorNode(UdpEmulatorBase):
             h_fov_deg=self.get_parameter('horizontal_fov_deg').value,
             v_min_deg=self.get_parameter('vertical_fov_min_deg').value,
             v_max_deg=self.get_parameter('vertical_fov_max_deg').value)
+        self.noise = vp.RangeNoise(
+            sigma_m=self.get_parameter('range_noise_sigma_m').value,
+            dropout_probability=self.get_parameter(
+                'dropout_probability').value,
+            seed=self.get_parameter('noise_seed').value)
 
         # ── Sensor state ──
         self.quitting = False
@@ -249,6 +272,13 @@ class Yvt35lxEmulatorNode(UdpEmulatorBase):
             f'{vp.LINE_COUNT} lines x {vp.SPOT_COUNT} spots, '
             f'scan {self.get_parameter("scan_rate_hz").value} Hz, '
             f'source {self.get_parameter("pointcloud_topic").value}')
+        if self.noise.enabled:
+            self.get_logger().info(
+                f'sensor noise ON: range sigma '
+                f'{self.get_parameter("range_noise_sigma_m").value} m, '
+                f'dropout {self.get_parameter("dropout_probability").value}, '
+                f'seed {self.get_parameter("noise_seed").value} - disable it '
+                f'if the simulation already models sensor noise')
 
     # ── Properties used by sessions ──
 
@@ -389,7 +419,9 @@ class Yvt35lxEmulatorNode(UdpEmulatorBase):
         inten = (pts['intensity'].astype(np.float64) if has_intensity
                  else np.zeros(len(x)))
         # Tuple assignment is atomic; streamer threads always see a
-        # consistent (range, intensity) pair.
+        # consistent (range, intensity) pair. Noise is not applied here:
+        # it is drawn per revolution, so each scan is an independent
+        # measurement even when the source publishes more slowly.
         self.grids = self.geometry.bin_pointcloud(x, y, z, inten)
         self._cloud_count += 1
 

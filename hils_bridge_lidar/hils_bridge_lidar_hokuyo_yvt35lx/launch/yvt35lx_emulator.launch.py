@@ -21,6 +21,14 @@ def generate_launch_description():
                               description='Lower vertical scan angle'),
         DeclareLaunchArgument('vertical_fov_max_deg', default_value='20.0',
                               description='Upper vertical scan angle'),
+        DeclareLaunchArgument('range_noise_sigma_m', default_value='0.0',
+                              description='Range noise std-dev in m (0 = off; '
+                                          'leave off if the simulation already '
+                                          'models sensor noise)'),
+        DeclareLaunchArgument('dropout_probability', default_value='0.0',
+                              description='Probability a spot reports no echo'),
+        DeclareLaunchArgument('noise_seed', default_value='0',
+                              description='Seed for the noise generator'),
         DeclareLaunchArgument('serial_number', default_value='H0000001',
                               description='Emulated serial number'),
         DeclareLaunchArgument('device_ip', default_value='192.168.0.10',
@@ -41,6 +49,17 @@ def generate_launch_description():
                 'horizontal_fov_deg': LaunchConfiguration('horizontal_fov_deg'),
                 'vertical_fov_min_deg': LaunchConfiguration('vertical_fov_min_deg'),
                 'vertical_fov_max_deg': LaunchConfiguration('vertical_fov_max_deg'),
+                # Typed explicitly: "0" on the command line would
+                # otherwise be inferred as an integer and rejected by
+                # these double parameters.
+                'range_noise_sigma_m': ParameterValue(
+                    LaunchConfiguration('range_noise_sigma_m'),
+                    value_type=float),
+                'dropout_probability': ParameterValue(
+                    LaunchConfiguration('dropout_probability'),
+                    value_type=float),
+                'noise_seed': ParameterValue(
+                    LaunchConfiguration('noise_seed'), value_type=int),
                 'serial_number': ParameterValue(
                     LaunchConfiguration('serial_number'), value_type=str),
                 'device_ip': LaunchConfiguration('device_ip'),

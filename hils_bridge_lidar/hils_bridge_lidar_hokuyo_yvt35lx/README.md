@@ -48,6 +48,37 @@ ros2 launch hils_bridge_lidar_hokuyo_yvt35lx yvt35lx_emulator.launch.py \
     network_interface:=eth1 host_ip:=192.168.0.15
 ```
 
+## Sensor noise
+
+A real device's error lands on the measured distance along the beam, so
+it is applied to the millimetre range values that go into the packet -
+not to the cartesian points coming in.
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `range_noise_sigma_m` | `0.0` | Std-dev of the range noise, in metres |
+| `dropout_probability` | `0.0` | Chance that a spot reports no echo |
+| `noise_seed` | `0` | Same seed + same call sequence = same output |
+
+**Off by default on purpose**: the simulation feeding the emulator
+normally models its own sensor noise, and applying it on both sides
+would misrepresent what the driver really sees. Turn it on only when
+the point source is noise-free — a synthetic scene, or a clean rosbag.
+`tools/run_yvt35lx_demo.sh` does exactly that (20 mm, 1 % dropout).
+
+Noise is drawn once per revolution, so a static scene still yields an
+independent measurement per scan. A return pushed outside the 0.3-35 m
+range, or dropped, is reported as no echo at all, and its intensity
+goes with it.
+
+```bash
+ros2 run hils_bridge_lidar_hokuyo_yvt35lx yvt35lx_emulator_node --ros-args \
+    -p range_noise_sigma_m:=0.02 -p dropout_probability:=0.01 -p noise_seed:=1
+```
+
+Pass `0.0`, not `0`: ROS types a bare `0` as an integer and refuses to
+assign it to these double parameters.
+
 ## Notes / limitations
 
 - **Interlace**: `SET:_itl`/`SET:_itv` are accepted and motor/rem
