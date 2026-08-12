@@ -27,8 +27,10 @@ Usage:
 """
 
 import functools
+import os
 import time
 import threading
+import tty
 
 import serial
 
@@ -40,6 +42,78 @@ from hils_bridge_base import frame_protocol
 from hils_bridge_base.device_state import DeviceStateMachine
 from hils_bridge_base.device_state import state as device_states
 from hils_bridge_base.fault_injection import DelayedSender, FaultPipeline
+
+
+class _PtyTransport:
+    """os.openpty()-backed drop-in for serial.Serial (SILS, no adapter).
+
+    Presents the same surface the bridge nodes use on a serial.Serial
+    (write/flush/read/close/is_open/baudrate): the node talks to the
+    PTY master while the peer program opens a symlink to the slave pts,
+    exactly how REACT-simulator's hardware_emulator VirtualSerialPort
+    presents virtual devices. The slave fd is kept open on our side so
+    reads on the master see EAGAIN (no data) instead of EIO when the
+    peer closes and reopens the port.
+    """
+
+    def __init__(self, link_path: str, baudrate: int = 0):
+        self._master_fd, self._slave_fd = os.openpty()
+        # Raw mode: no echo / line discipline mangling of binary protocols.
+        tty.setraw(self._slave_fd)
+        os.set_blocking(self._master_fd, False)
+
+        # Replace whatever sits at link_path with a symlink to the pts.
+        slave_path = os.ttyname(self._slave_fd)
+        if os.path.islink(link_path) or os.path.exists(link_path):
+            os.remove(link_path)
+        os.symlink(slave_path, link_path)
+        self._link_path = link_path
+
+        # Meaningless on a PTY; kept assignable so the baudrate
+        # param-change handler in SerialBridgeBase stays a safe no-op.
+        self.baudrate = baudrate
+        self.is_open = True
+
+    @property
+    def link_path(self) -> str:
+        """The symlink path the peer program opens."""
+        return self._link_path
+
+    def write(self, data: bytes) -> int:
+        try:
+            return os.write(self._master_fd, data)
+        except BlockingIOError:
+            # PTY buffer full (peer not draining): drop, like an
+            # unread UART FIFO, rather than blocking the executor.
+            return 0
+        except OSError as e:
+            raise serial.SerialException(f'PTY write failed: {e}') from e
+
+    def flush(self) -> None:
+        """No-op: os.write() to the master has no userspace buffer."""
+
+    def read(self, n: int) -> bytes:
+        """Non-blocking read; b'' when no data is available."""
+        try:
+            return os.read(self._master_fd, n)
+        except (BlockingIOError, OSError):
+            return b''
+
+    def close(self) -> None:
+        if not self.is_open:
+            return
+        self.is_open = False
+        for fd in (self._master_fd, self._slave_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        # Remove the symlink so a stale path never points at a dead pts.
+        try:
+            if os.path.islink(self._link_path):
+                os.remove(self._link_path)
+        except OSError:
+            pass
 
 
 class SerialBridgeBase(Node):
@@ -72,20 +146,38 @@ class SerialBridgeBase(Node):
                 description='Serial write timeout. A timed-out write is '
                             'logged and dropped instead of blocking the '
                             'node forever.'))
+        # SILS without any USB-serial hardware: instead of opening
+        # serial_port as an existing device, create a PTY pair and
+        # symlink serial_port -> slave pts. The peer program opens the
+        # symlink as if it were the real device.
+        self.declare_parameter('create_pty', False,
+            ParameterDescriptor(
+                description='Create a virtual serial device (PTY) and '
+                            'symlink serial_port to it instead of '
+                            'opening serial_port as an existing device.'))
 
         self.add_on_set_parameters_callback(self._on_param_change)
 
-        # Open serial port
+        # Open serial port (or create the virtual one)
         port = self.get_parameter('serial_port').value
         baudrate = self.get_parameter('baudrate').value
-        try:
-            self._serial = serial.Serial(
-                port, baudrate, timeout=0,
-                write_timeout=self.get_parameter('write_timeout_sec').value)
-            self.get_logger().info(f'Opened serial port: {port} @ {baudrate} baud')
-        except serial.SerialException as e:
-            self.get_logger().error(f'Failed to open serial port {port}: {e}')
-            raise
+        if self.get_parameter('create_pty').value:
+            try:
+                self._serial = _PtyTransport(port, baudrate)
+                self.get_logger().info(
+                    f'Created virtual serial device (PTY): {port}')
+            except OSError as e:
+                self.get_logger().error(f'Failed to create PTY {port}: {e}')
+                raise
+        else:
+            try:
+                self._serial = serial.Serial(
+                    port, baudrate, timeout=0,
+                    write_timeout=self.get_parameter('write_timeout_sec').value)
+                self.get_logger().info(f'Opened serial port: {port} @ {baudrate} baud')
+            except serial.SerialException as e:
+                self.get_logger().error(f'Failed to open serial port {port}: {e}')
+                raise
 
         self._serial_lock = threading.Lock()
         self._last_send_time = 0.0
@@ -140,6 +232,9 @@ class SerialBridgeBase(Node):
     def _on_param_change(self, params):
         for param in params:
             if param.name == 'baudrate':
+                # On a real port pyserial reconfigures the line; on a
+                # _PtyTransport this is a plain attribute store (a PTY
+                # has no baudrate), so the change is a safe no-op.
                 with self._serial_lock:
                     self._serial.baudrate = param.value
                 self.get_logger().info(f'Baudrate changed to {param.value}')
@@ -226,6 +321,8 @@ class SerialBridgeBase(Node):
             if discarded:
                 self.get_logger().info(
                     f'Discarded {discarded} pending delayed write(s)')
+        # In create_pty mode _PtyTransport.close() also removes the
+        # serial_port symlink so no stale path survives the node.
         if hasattr(self, '_serial') and self._serial.is_open:
             self._serial.close()
         super().destroy_node()
