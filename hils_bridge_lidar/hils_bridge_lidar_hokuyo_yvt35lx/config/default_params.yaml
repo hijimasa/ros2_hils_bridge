@@ -6,13 +6,17 @@
     # VSSP TCP port (real sensor: 10940)
     tcp_port: 10940
 
-    # Motor revolutions per second = frame rate at interlace (1,1)
-    scan_rate_hz: 10.0
+    # Frames per second (datasheet: 20 Hz)
+    scan_rate_hz: 20.0
 
-    # Scan geometry (YVT-35LX: horizontal 210 deg, vertical 40 deg)
+    # Scan geometry (datasheet): horizontal +-105 deg, vertical -5..+35
+    # deg. The mirror oscillates at 1200 Hz while the rangefinder
+    # samples at 88800 points/s, so one line is one oscillation of 74
+    # spots and 35 measured lines make the quoted 2590 points per frame.
     horizontal_fov_deg: 210.0
-    vertical_fov_min_deg: -20.0
-    vertical_fov_max_deg: 20.0
+    vertical_fov_min_deg: -5.0
+    vertical_fov_max_deg: 35.0
+    measured_lines: 35
 
     # Sensor noise, applied to the range value along the beam.
     # Off by default: the simulation feeding the emulator usually models

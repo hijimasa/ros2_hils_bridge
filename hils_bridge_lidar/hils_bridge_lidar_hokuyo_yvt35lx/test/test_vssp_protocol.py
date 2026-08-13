@@ -82,9 +82,10 @@ def test_motor_angle_table_spans_full_line():
     assert all(b >= a for a, b in zip(ratios, ratios[1:]))
 
 
-def test_vertical_angle_table_decodes_to_requested_fov():
+def decode_vertical_table(v_min=vp.VERTICAL_MIN_DEG,
+                          v_max=vp.VERTICAL_MAX_DEG):
     pkt = vp.encode_angle_table(
-        'GET:tv00', vp.vertical_angle_table(-20.0, 20.0), 0)
+        'GET:tv00', vp.vertical_angle_table(v_min, v_max), 0)
     _t, _s, length, body = parse_header(pkt)
     degrees = []
     for raw in read_angle_table(body, length):
@@ -92,9 +93,91 @@ def test_vertical_angle_table_decodes_to_requested_fov():
         if rad > math.pi:      # the library's wrap for negative angles
             rad -= 2.0 * math.pi
         degrees.append(math.degrees(rad))
+    return degrees
+
+
+def test_vertical_angle_table_spans_the_datasheet_fov():
+    degrees = decode_vertical_table()
     assert len(degrees) == vp.SPOT_COUNT
-    assert abs(degrees[0] + 20.0) < 0.02
-    assert abs(degrees[-1] - 20.0) < 0.02
+    assert abs(min(degrees) - vp.VERTICAL_MIN_DEG) < 0.1   # -5 deg
+    assert abs(max(degrees) - vp.VERTICAL_MAX_DEG) < 0.1   # +35 deg
+
+
+def test_vertical_angle_table_is_one_oscillation_not_a_ramp():
+    # The mirror oscillates, so the elevation over a line is a sine:
+    # it rises, falls back through the centre to the bottom, and
+    # returns - every angle but the extremes is sampled twice.
+    degrees = decode_vertical_table()
+    centre = (vp.VERTICAL_MAX_DEG + vp.VERTICAL_MIN_DEG) / 2.0
+    quarter = vp.SPOT_COUNT // 4
+    assert abs(degrees[0] - centre) < 0.1
+    assert abs(degrees[quarter] - vp.VERTICAL_MAX_DEG) < 0.2
+    assert abs(degrees[vp.SPOT_COUNT // 2] - centre) < 0.1
+    assert abs(degrees[3 * quarter] - vp.VERTICAL_MIN_DEG) < 0.2
+    # ends where it started, so lines join up
+    assert abs(degrees[-1] - degrees[0]) > 0.0
+    assert abs(degrees[-1] - centre) < 2.0
+    rising = sum(1 for a, b in zip(degrees, degrees[1:]) if b > a)
+    assert 0.4 * vp.SPOT_COUNT < rising < 0.6 * vp.SPOT_COUNT
+
+
+def test_measured_lines_span_the_whole_horizontal_fov():
+    # The 35 measured lines have to reach +-105 deg between them; the
+    # 36th line the protocol reports carries no echoes.
+    geometry = vp.ScanGeometry()
+    assert abs(geometry.line_width_deg
+               - vp.HORIZONTAL_FOV_DEG / vp.MEASURED_LINE_COUNT) < 1e-9
+    last = vp.MEASURED_LINE_COUNT - 1
+    end_deg = (geometry.h_min_deg + last * geometry.line_width_deg
+               + geometry.spot_azimuth_offset_deg[-1])
+    assert geometry.h_min_deg == -105.0
+    assert end_deg > 105.0 - geometry.line_width_deg / vp.SPOT_COUNT * 2
+
+
+def test_scan_pattern_numbers_match_the_datasheet():
+    # 88800 samples/s over a 1200 Hz oscillation is 74 spots per line,
+    # and 35 measured lines make the quoted 2590 points per frame.
+    assert vp.MEASUREMENT_RATE_HZ / vp.VERTICAL_OSCILLATION_HZ == vp.SPOT_COUNT
+    assert vp.MEASURED_LINE_COUNT * vp.SPOT_COUNT == vp.POINTS_PER_FRAME
+    assert vp.POINTS_PER_FRAME == 2590
+    # the 2590 samples fit inside one 20 Hz frame
+    assert vp.POINTS_PER_FRAME / vp.MEASUREMENT_RATE_HZ < 1.0 / vp.FRAME_RATE_HZ
+
+
+def test_interlace_shifts_the_sampling_phase_per_field():
+    # The device hands out one tvNN table per rem field so that
+    # successive scans interleave; identical tables would just repeat
+    # the same angles and resolve nothing.
+    # Compare the exact angles, not the 16-bit encoded table, so the
+    # quantisation step does not mask the phase shift.
+    field0 = vp.vertical_angles_deg()
+    field1 = vp.vertical_angles_deg(rem_field=1, rem_interlace=4)
+    field2 = vp.vertical_angles_deg(rem_field=2, rem_interlace=4)
+    assert field0[:3] != field1[:3]
+    assert field1[:3] != field2[:3]
+    # A quarter-spot shift, well inside one spot's spacing.
+    spacing = abs(field0[1] - field0[0])
+    assert 0.0 < abs(field1[0] - field0[0]) < spacing
+    # Interlace 1 has no shift at all.
+    assert vp.vertical_angles_deg(rem_field=3, rem_interlace=1)[0] == field0[0]
+
+
+def test_interlaced_binning_uses_the_matching_field_angles():
+    geometry = vp.ScanGeometry()
+    # A point placed exactly on field 1's beam must land on the spot
+    # that field 1's table reports, not field 0's.
+    elevations = vp.vertical_angles_deg(rem_field=1, rem_interlace=4)
+    spot = 10
+    el = math.radians(elevations[spot])
+    az = math.radians(geometry.h_min_deg
+                      + geometry.spot_azimuth_offset_deg[spot])
+    r = 5.0
+    x = np.array([r * math.cos(el) * math.cos(az)])
+    y = np.array([r * math.cos(el) * math.sin(az)])
+    z = np.array([r * math.sin(el)])
+    grid, _ = geometry.bin_pointcloud(x, y, z, np.array([100.0]),
+                                      rem_field=1, rem_interlace=4)
+    assert grid[0][spot] > 0, np.argwhere(grid > 0)
 
 
 def parse_range_packet(pkt):
@@ -189,8 +272,8 @@ def test_ax_packet_scales_match_driver_constants():
 def test_wall_survives_the_scan_grid_round_trip():
     """A 10 m wall must reconstruct near 10 m through the library's math."""
     geometry = vp.ScanGeometry()
-    ys = np.arange(-3.0, 3.01, 0.1)
-    zs = np.arange(-1.5, 1.51, 0.1)
+    ys = np.arange(-3.0, 3.01, 0.05)
+    zs = np.arange(-0.5, 5.01, 0.05)      # inside the -5..+35 deg FOV
     yy, zz = np.meshgrid(ys, zs)
     y, z = yy.ravel(), zz.ravel()
     x = np.full(y.size, 10.0)
@@ -200,10 +283,7 @@ def test_wall_survives_the_scan_grid_round_trip():
     assert intensity_grid[range_grid > 0].min() == 100
 
     motor = [v / 65535.0 for v in vp.motor_ratio_table()]
-    vertical = []
-    for raw in vp.vertical_angle_table(geometry.v_min_deg, geometry.v_max_deg):
-        rad = raw * 2.0 * math.pi / 65535.0
-        vertical.append(rad - 2.0 * math.pi if rad > math.pi else rad)
+    vertical = [math.radians(d) for d in vp.vertical_angles_deg()]
 
     for line in range(vp.LINE_COUNT):
         head = geometry.head_ratios[line]
@@ -219,18 +299,48 @@ def test_wall_survives_the_scan_grid_round_trip():
             pz = distance * math.sin(vertical[spot])
             assert abs(px - 10.0) < 0.9, (line, spot, px)
             assert -3.6 < py < 3.6
-            assert -2.0 < pz < 2.0
+            assert -1.0 < pz < 5.5
+
+
+def test_every_beam_of_a_line_traces_one_sine_across_its_azimuth():
+    # The point of the scan pattern: within a line the elevation is a
+    # sine of the spot index while the azimuth advances steadily, so a
+    # surface is sampled along a sinusoid rather than a vertical stripe.
+    geometry = vp.ScanGeometry()
+    elevations = geometry.spot_elevation_deg
+    azimuths = geometry.spot_azimuth_offset_deg
+    assert azimuths[0] == 0.0
+    assert azimuths[-1] < geometry.line_width_deg
+    assert all(b > a for a, b in zip(azimuths, azimuths[1:]))
+    # One full period: rising, then falling, then rising again. Ignore
+    # the flat steps at the turning points, where two spots straddle the
+    # extreme and the slope reads as zero.
+    slope = np.sign(np.diff(elevations))
+    slope = slope[slope != 0]
+    turns = int((np.diff(slope) != 0).sum())
+    assert turns == 2, turns
 
 
 def test_points_outside_the_field_of_view_are_dropped():
-    geometry = vp.ScanGeometry(h_fov_deg=210.0, v_min_deg=-20.0,
-                               v_max_deg=20.0)
-    # Straight up (elevation 90 deg) and behind the blind sector.
-    x = np.array([0.0, -10.0])
-    y = np.array([0.0, -0.1])
-    z = np.array([5.0, 0.0])
-    range_grid, _ = geometry.bin_pointcloud(x, y, z, np.zeros(2))
+    geometry = vp.ScanGeometry()
+    # Straight up (above +35 deg), below -5 deg, and behind the sensor.
+    x = np.array([0.0, 10.0, -10.0])
+    y = np.array([0.0, 0.0, -0.1])
+    z = np.array([5.0, -5.0, 0.0])
+    range_grid, _ = geometry.bin_pointcloud(x, y, z, np.zeros(3))
     assert (range_grid > 0).sum() == 0
+
+
+def test_points_outside_the_measurement_range_are_dropped():
+    geometry = vp.ScanGeometry()
+    # Closer than 0.3 m and farther than 35 m: the real sensor reports
+    # neither, so neither may appear in the packets.
+    x = np.array([0.1, 40.0, 10.0])
+    y = np.zeros(3)
+    z = np.array([0.02, 8.0, 2.0])
+    range_grid, _ = geometry.bin_pointcloud(x, y, z, np.zeros(3))
+    assert (range_grid > 0).sum() == 1
+    assert 10100 < range_grid.max() < 10300
 
 
 def _grid(value_mm=5000, intensity=100):
@@ -295,13 +405,3 @@ def test_noise_leaves_spots_without_echo_empty():
     assert np.all(out_r[0, :] == 0)
 
 
-def test_points_outside_the_measurement_range_are_dropped():
-    geometry = vp.ScanGeometry()
-    # Closer than 0.3 m and farther than 35 m: the real sensor reports
-    # neither, so neither may appear in the packets.
-    x = np.array([0.1, 40.0, 10.0])
-    y = np.zeros(3)
-    z = np.zeros(3)
-    range_grid, _ = geometry.bin_pointcloud(x, y, z, np.zeros(3))
-    assert (range_grid > 0).sum() == 1
-    assert range_grid.max() == 10000

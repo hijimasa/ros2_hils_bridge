@@ -17,10 +17,17 @@ protocol parser):
     range header, full-line index blocks)
   - _ax auxiliary packets (gyro / accel / compass / temperature)
 
-Interlace note: SET:_itl / SET:_itv are accepted and the emulator
-cycles motor/rem field numbers and frame counters accordingly, but all
-fields sample the same angle grid (no sub-bin angular offsets). Driver
-interlace bookkeeping is exercised; angular super-resolution is not.
+Scan pattern: the mirror oscillates at 1200 Hz while the rangefinder
+samples at 88800 points/s, so one line is one oscillation of 74 spots
+and the elevation follows a sine over the spot index, not a ramp. 35
+measured lines make the datasheet's 2590 points per frame at 20 Hz;
+the remaining lines of the protocol's 36 are sent empty. Field of view
+is 210 deg horizontal and -5..+35 deg vertical.
+
+Interlace: SET:_itl / SET:_itv shift the sampling phase per field, as
+on the real device - each rem field gets its own tvNN table and its own
+binning, so successive scans fall between each other's spots instead of
+repeating the same angles.
 
 Loopback E2E (no extra NIC needed):
   ros2 run hils_bridge_lidar_hokuyo_yvt35lx yvt35lx_emulator_node \
@@ -141,12 +148,29 @@ class _ClientSession:
             # Fresh noise for this revolution: a real sensor measures
             # each scan independently, so two frames of a static scene
             # must not carry identical ranges.
-            range_grid, intens_grid = node.noise.apply(*node.grids)
+            range_grid, intens_grid = node.noise.apply(
+                *node.grids_for(motor_field, rem_field))
             geom = node.geometry
-            line_ms = period_ms / vp.LINE_COUNT
+            # The driver reads the azimuth straight off the head/tail
+            # motor ratios in the packet, so the motor interlace offset
+            # has to travel with them. Applying it only when binning
+            # left every field drawn at the same azimuths - the fields
+            # piled up on each other instead of interleaving.
+            motor_shift = vp.angle_deg_to_motor_ratio(
+                geom.motor_offset_deg(motor_field, motor_intl))
+            measured = node.measured_lines
+            # The 2590 samples of a frame take 2590 / 88800 s; the rest
+            # of the frame period is the mirror settling back, so the
+            # remaining lines of the protocol's 36 carry no echoes.
+            active_ms = (measured * vp.SPOT_COUNT
+                         / vp.MEASUREMENT_RATE_HZ) * 1000.0
+            line_ms = active_ms / max(1, measured)
+            empty_line = np.zeros(vp.SPOT_COUNT, dtype=np.uint16)
             for li in range(vp.LINE_COUNT):
                 ts_head = int(base_ms + li * line_ms)
                 ts_tail = int(base_ms + (li + 1) * line_ms)
+                ranges = range_grid[li] if li < measured else empty_line
+                intensities = intens_grid[li] if li < measured else empty_line
                 for with_intensity in ((True,) if self.ri else ()) + \
                                       ((False,) if self.ro else ()):
                     pkt = vp.build_range_packet(
@@ -154,10 +178,10 @@ class _ClientSession:
                         frame=frame, motor_field=motor_field,
                         rem_field=rem_field, rem_interlace=rem_intl,
                         line=li, ts_head_ms=ts_head, ts_tail_ms=ts_tail,
-                        head_ratio=geom.head_ratios[li],
-                        tail_ratio=geom.tail_ratios[li],
-                        ranges_mm=range_grid[li],
-                        intensities=intens_grid[li],
+                        head_ratio=geom.head_ratios[li] + motor_shift,
+                        tail_ratio=geom.tail_ratios[li] + motor_shift,
+                        ranges_mm=ranges,
+                        intensities=intensities,
                         ts_ms=ts_tail)
                     if not node.send_tcp(self, pkt, channel='data'):
                         return
@@ -187,16 +211,21 @@ class Yvt35lxEmulatorNode(UdpEmulatorBase):
             ParameterDescriptor(description='VSSP TCP port (sensor: 10940)'))
         self.declare_parameter('pointcloud_topic', '/sim_points',
             ParameterDescriptor(description='PointCloud2 topic from simulation'))
-        self.declare_parameter('scan_rate_hz', 10.0,
+        self.declare_parameter('scan_rate_hz', vp.FRAME_RATE_HZ,
             ParameterDescriptor(
-                description='Motor revolutions per second (frame rate at '
-                            'interlace 1)'))
-        self.declare_parameter('horizontal_fov_deg', 210.0,
+                description='Frames per second (datasheet: 20 Hz)'))
+        self.declare_parameter('horizontal_fov_deg', vp.HORIZONTAL_FOV_DEG,
             ParameterDescriptor(description='Horizontal field of view'))
-        self.declare_parameter('vertical_fov_min_deg', -20.0,
+        self.declare_parameter('vertical_fov_min_deg', vp.VERTICAL_MIN_DEG,
             ParameterDescriptor(description='Lower vertical scan angle'))
-        self.declare_parameter('vertical_fov_max_deg', 20.0,
+        self.declare_parameter('vertical_fov_max_deg', vp.VERTICAL_MAX_DEG,
             ParameterDescriptor(description='Upper vertical scan angle'))
+        self.declare_parameter('measured_lines', vp.MEASURED_LINE_COUNT,
+            ParameterDescriptor(
+                description='Lines carrying measurements per frame. The '
+                            'protocol always reports 36; the datasheet\'s '
+                            '2590 points come from 35 of them, so the rest '
+                            'are sent empty (mirror retrace).'))
         # Sensor noise. Off by default: the simulation feeding this
         # emulator normally models its own sensor noise, and applying it
         # on both sides would misrepresent what the driver really sees.
@@ -220,7 +249,10 @@ class Yvt35lxEmulatorNode(UdpEmulatorBase):
         self.geometry = vp.ScanGeometry(
             h_fov_deg=self.get_parameter('horizontal_fov_deg').value,
             v_min_deg=self.get_parameter('vertical_fov_min_deg').value,
-            v_max_deg=self.get_parameter('vertical_fov_max_deg').value)
+            v_max_deg=self.get_parameter('vertical_fov_max_deg').value,
+            measured_lines=self.get_parameter('measured_lines').value)
+        self.measured_lines = max(1, min(
+            vp.LINE_COUNT, self.get_parameter('measured_lines').value))
         self.noise = vp.RangeNoise(
             sigma_m=self.get_parameter('range_noise_sigma_m').value,
             dropout_probability=self.get_parameter(
@@ -231,15 +263,14 @@ class Yvt35lxEmulatorNode(UdpEmulatorBase):
         self.quitting = False
         self.motor_interlace = 1
         self.rem_interlace = 1
-        self.grids = (
-            np.zeros((vp.LINE_COUNT, vp.SPOT_COUNT), dtype=np.uint16),
-            np.zeros((vp.LINE_COUNT, vp.SPOT_COUNT), dtype=np.uint16))
+        empty = np.zeros(0, dtype=np.float64)
+        self.cloud = (empty, empty, empty, empty)
+        self._cloud_serial = 0
+        self._grid_cache = {}
+        self._grid_lock = threading.Lock()
         self.aux_record = vp.aux_record_raw()
         self._epoch = time.monotonic()
         self._motor_table = vp.motor_ratio_table()
-        self._vertical_table = vp.vertical_angle_table(
-            self.get_parameter('vertical_fov_min_deg').value,
-            self.get_parameter('vertical_fov_max_deg').value)
 
         self._sessions = []
         self._sessions_lock = threading.Lock()
@@ -286,6 +317,37 @@ class Yvt35lxEmulatorNode(UdpEmulatorBase):
     def scan_rate_hz(self) -> float:
         rate = self.get_parameter('scan_rate_hz').value
         return rate if rate > 0.1 else 10.0
+
+    def vertical_table(self, rem_field: int = 0):
+        """tvNN values for one rem field at the current interlace."""
+        return vp.vertical_angle_table(
+            self.get_parameter('vertical_fov_min_deg').value,
+            self.get_parameter('vertical_fov_max_deg').value,
+            rem_field, self.rem_interlace)
+
+    def grids_for(self, motor_field: int, rem_field: int):
+        """Binned (range, intensity) grids for one interlace field.
+
+        Cached per field and invalidated when a new cloud arrives, so a
+        steady scene is binned once per field rather than per
+        revolution.
+        """
+        key = (self._cloud_serial, motor_field, self.motor_interlace,
+               rem_field, self.rem_interlace)
+        with self._grid_lock:
+            cached = self._grid_cache.get(key)
+            if cached is not None:
+                return cached
+        x, y, z, intensity = self.cloud
+        grids = self.geometry.bin_pointcloud(
+            x, y, z, intensity, rem_field=rem_field,
+            rem_interlace=self.rem_interlace, motor_field=motor_field,
+            motor_interlace=self.motor_interlace)
+        with self._grid_lock:
+            if len(self._grid_cache) > 2 * vp.MAX_REM_INTERLACE:
+                self._grid_cache.clear()
+            self._grid_cache[key] = grids
+        return grids
 
     def sensor_ms(self) -> float:
         """Sensor-clock milliseconds (u32 wrap handled at pack time)."""
@@ -355,8 +417,10 @@ class Yvt35lxEmulatorNode(UdpEmulatorBase):
             pkt = vp.encode_angle_table(command, self._motor_table, ts)
         elif command.startswith('GET:tv') and len(command) == 8 \
                 and command[6:8].isdigit():
-            # All rem fields share the same base table (see module doc).
-            pkt = vp.encode_angle_table(command, self._vertical_table, ts)
+            # One table per rem field: interlace shifts the sampling
+            # phase, so each field lands between the others' spots.
+            pkt = vp.encode_angle_table(
+                command, self.vertical_table(int(command[6:8])), ts)
         elif command.startswith('SET:_itl=0,'):
             pkt = self._set_interlace(command, 'motor',
                                       vp.MAX_MOTOR_INTERLACE, ts)
@@ -418,11 +482,12 @@ class Yvt35lxEmulatorNode(UdpEmulatorBase):
         z = pts['z'].astype(np.float64)
         inten = (pts['intensity'].astype(np.float64) if has_intensity
                  else np.zeros(len(x)))
-        # Tuple assignment is atomic; streamer threads always see a
-        # consistent (range, intensity) pair. Noise is not applied here:
-        # it is drawn per revolution, so each scan is an independent
-        # measurement even when the source publishes more slowly.
-        self.grids = self.geometry.bin_pointcloud(x, y, z, inten)
+        # Keep the cloud, not a binned grid: the grid depends on which
+        # interlace field is being scanned, and the field changes from
+        # one revolution to the next. Tuple assignment is atomic, so
+        # streamer threads always see one consistent cloud.
+        self.cloud = (x, y, z, inten)
+        self._cloud_serial += 1
         self._cloud_count += 1
 
     # ── Stats ──

@@ -58,6 +58,29 @@ MAX_REM_INTERLACE = 10
 MIN_RANGE_M = 0.3
 MAX_RANGE_M = 35.0
 
+# Scan pattern (datasheet). The beam is deflected vertically by a mirror
+# oscillating at VERTICAL_OSCILLATION_HZ while the head turns through
+# the horizontal field of view, and the rangefinder samples at a fixed
+# rate. One VSSP line is therefore one oscillation period:
+#     MEASUREMENT_RATE_HZ / VERTICAL_OSCILLATION_HZ = 74 spots per line
+# which is exactly SPOT_COUNT, and
+#     MEASURED_LINE_COUNT * SPOT_COUNT = 2590 points per frame
+# at FRAME_RATE_HZ. The frame period leaves time beyond those 2590
+# samples, so the last of the protocol's 36 lines carries no echoes.
+HORIZONTAL_FOV_DEG = 210.0        # +-105 deg
+VERTICAL_MIN_DEG = -5.0
+VERTICAL_MAX_DEG = 35.0
+VERTICAL_OSCILLATION_HZ = 1200.0
+MEASUREMENT_RATE_HZ = 88800.0
+FRAME_RATE_HZ = 20.0
+MEASURED_LINE_COUNT = 35
+# Width of the kernel that weights input samples by their angular
+# distance from a beam when estimating that beam's range.
+BEAM_MATCH_SIGMA_DEG = 0.15
+# Samples further than this from a beam are not evidence about it.
+BEAM_MATCH_GATE_DEG = 1.2
+POINTS_PER_FRAME = MEASURED_LINE_COUNT * SPOT_COUNT   # 2590
+
 HEADER_LEN = 24
 RANGE_HEADER_LEN = 22
 STATUS_OK = '000'
@@ -120,15 +143,44 @@ def motor_ratio_table():
     return [round(s / (SPOT_COUNT - 1) * 65535) for s in range(SPOT_COUNT)]
 
 
-def vertical_angle_table(v_min_deg: float, v_max_deg: float):
+def vertical_angles_deg(v_min_deg: float = VERTICAL_MIN_DEG,
+                        v_max_deg: float = VERTICAL_MAX_DEG,
+                        rem_field: int = 0, rem_interlace: int = 1):
+    """Vertical angle of each spot in a line, in degrees.
+
+    The mirror oscillates; the rangefinder samples it at a constant
+    rate. So the elevation follows a sine over the spot index rather
+    than a ramp, and one line covers a full period: it starts at the
+    centre going up, reaches v_max a quarter of the way in, passes the
+    centre again, bottoms out at v_min, and returns. Two spots share
+    almost every elevation - once on the way up, once on the way down -
+    which is what gives the cloud its sinusoidal traces.
+
+    With rem interlace the sampling phase shifts by a fraction of a
+    spot per field, so consecutive scans fall between each other's
+    spots and the fields together resolve the vertical axis more
+    finely. This is why VSSP hands out one table per field (tv00,
+    tv01, ...) instead of a single one.
+    """
+    centre = (v_max_deg + v_min_deg) / 2.0
+    amplitude = (v_max_deg - v_min_deg) / 2.0
+    phase = (rem_field % max(1, rem_interlace)) / max(1, rem_interlace)
+    return [centre + amplitude
+            * math.sin(2.0 * math.pi * (s + phase) / SPOT_COUNT)
+            for s in range(SPOT_COUNT)]
+
+
+def vertical_angle_table(v_min_deg: float = VERTICAL_MIN_DEG,
+                         v_max_deg: float = VERTICAL_MAX_DEG,
+                         rem_field: int = 0, rem_interlace: int = 1):
     """tvNN values: per-spot vertical angle as (rad / 2pi) * 65535.
 
     Negative angles wrap to the upper half of the 0..65535 circle;
     urg3d_library subtracts 2pi when the decoded angle exceeds pi.
     """
     values = []
-    for s in range(SPOT_COUNT):
-        deg = v_min_deg + (v_max_deg - v_min_deg) * s / (SPOT_COUNT - 1)
+    for deg in vertical_angles_deg(v_min_deg, v_max_deg,
+                                   rem_field, rem_interlace):
         rad = math.radians(deg) % (2.0 * math.pi)
         values.append(round(rad / (2.0 * math.pi) * 65535) & 0xFFFF)
     return values
@@ -212,17 +264,26 @@ class ScanGeometry:
 
     The emulated scan mirrors what urg3d_library reconstructs from our
     own tables: within a line the motor (horizontal) angle interpolates
-    head->tail with the tblh ratio while the spot's vertical angle
-    follows the tvNN table, i.e. a diagonal sweep per line.
+    head->tail with the tblh ratio, while the spot's vertical angle
+    comes from the tvNN table - one full period of the mirror's
+    oscillation. Each line is therefore a sine traced across roughly six
+    degrees of azimuth, not a straight vertical sweep.
     """
 
-    def __init__(self, h_fov_deg: float = 210.0,
-                 v_min_deg: float = -20.0, v_max_deg: float = 20.0):
+    def __init__(self, h_fov_deg: float = HORIZONTAL_FOV_DEG,
+                 v_min_deg: float = VERTICAL_MIN_DEG,
+                 v_max_deg: float = VERTICAL_MAX_DEG,
+                 measured_lines: int = MEASURED_LINE_COUNT):
         self.h_min_deg = -h_fov_deg / 2.0
         self.h_max_deg = h_fov_deg / 2.0
         self.v_min_deg = v_min_deg
         self.v_max_deg = v_max_deg
-        self.line_width_deg = h_fov_deg / LINE_COUNT
+        self.measured_lines = max(1, min(LINE_COUNT, measured_lines))
+        # The measured lines have to span the whole field of view, so
+        # the step is the FOV divided by *those* lines - not by the 36
+        # the protocol always reports. Dividing by 36 left the scan
+        # 5.8 deg short of +105.
+        self.line_width_deg = h_fov_deg / self.measured_lines
         # Per-line head/tail motor angle ratios (i16)
         self.head_ratios = [
             angle_deg_to_motor_ratio(self.h_min_deg
@@ -232,12 +293,92 @@ class ScanGeometry:
             angle_deg_to_motor_ratio(self.h_min_deg
                                      + (li + 1) * self.line_width_deg)
             for li in range(LINE_COUNT)]
+        # The azimuth each spot adds within its line.
+        self.spot_azimuth_offset_deg = (
+            np.arange(SPOT_COUNT, dtype=np.float64) / SPOT_COUNT
+            * self.line_width_deg)
+        # Elevations depend on the rem field (interlace shifts the
+        # sampling phase), so they are built per field and cached.
+        self._elevation_cache = {}
 
-    def bin_pointcloud(self, x, y, z, intensity):
+    def spot_elevations(self, rem_field: int = 0, rem_interlace: int = 1):
+        """Spot elevations for one rem field, in degrees."""
+        key = (rem_field % max(1, rem_interlace), max(1, rem_interlace))
+        cached = self._elevation_cache.get(key)
+        if cached is None:
+            elevations = np.array(
+                vertical_angles_deg(self.v_min_deg, self.v_max_deg,
+                                    key[0], key[1]), dtype=np.float64)
+            order = np.argsort(elevations)
+            cached = (elevations, order, elevations[order])
+            self._elevation_cache[key] = cached
+        return cached
+
+    @property
+    def spot_elevation_deg(self):
+        """Elevations of the first field, for callers with no interlace."""
+        return self.spot_elevations()[0]
+
+    def _nearest_beam(self, az_deg, el_deg, rem_field: int = 0,
+                      rem_interlace: int = 1, motor_offset_deg: float = 0.0,
+                      candidates: int = 20):
+        """Find the (spot, line) whose beam passes closest to each angle.
+
+        Elevation alone does not identify a spot - the mirror passes
+        every angle twice per period - so the nearest few spots in
+        elevation are each paired with the line that would put them at
+        this azimuth, and the pair with the smallest angular error wins.
+        """
+        spot_elevation, elevation_order, elevation_sorted = \
+            self.spot_elevations(rem_field, rem_interlace)
+        insert = np.searchsorted(elevation_sorted, el_deg)
+        best_error = None
+        best_spot = None
+        best_line = None
+        half = candidates // 2
+        for offset in range(-half, candidates - half):
+            idx = np.clip(insert + offset, 0, SPOT_COUNT - 1)
+            spot = elevation_order[idx]
+            # Azimuth of this spot within line li is
+            # h_min + li * line_width + spot_azimuth_offset[spot].
+            line = np.rint(
+                (az_deg - self.h_min_deg - motor_offset_deg
+                 - self.spot_azimuth_offset_deg[spot]) / self.line_width_deg)
+            line = np.clip(line, 0, LINE_COUNT - 1)
+            beam_az = (self.h_min_deg + motor_offset_deg
+                       + line * self.line_width_deg
+                       + self.spot_azimuth_offset_deg[spot])
+            delta_el = el_deg - spot_elevation[spot]
+            delta_az = az_deg - beam_az
+            error = np.abs(delta_az) + np.abs(delta_el)
+            if best_error is None:
+                best_error, best_spot, best_line = error, spot, line
+                best_delta_el, best_delta_az = delta_el, delta_az
+            else:
+                better = error < best_error
+                best_error = np.where(better, error, best_error)
+                best_spot = np.where(better, spot, best_spot)
+                best_line = np.where(better, line, best_line)
+                best_delta_el = np.where(better, delta_el, best_delta_el)
+                best_delta_az = np.where(better, delta_az, best_delta_az)
+        return (best_spot.astype(np.intp), best_line.astype(np.intp),
+                best_error, best_delta_az, best_delta_el)
+
+    def motor_offset_deg(self, motor_field: int = 0,
+                         motor_interlace: int = 1) -> float:
+        """Azimuth shift of one motor field, in degrees."""
+        interlace = max(1, motor_interlace)
+        return ((motor_field % interlace) / interlace) * self.line_width_deg
+
+    def bin_pointcloud(self, x, y, z, intensity, rem_field: int = 0,
+                       rem_interlace: int = 1, motor_field: int = 0,
+                       motor_interlace: int = 1):
         """Bin cartesian points into (LINE_COUNT, SPOT_COUNT) grids.
 
         Returns (range_mm, intensity) uint16 grids; range 0 = no echo.
-        Keeps the nearest return per cell.
+        Keeps the nearest return per cell. The field numbers select the
+        interlaced sampling phase, so the ranges match the angle tables
+        the driver was handed for that field.
         """
         range_grid = np.zeros((LINE_COUNT, SPOT_COUNT), dtype=np.uint16)
         intens_grid = np.zeros((LINE_COUNT, SPOT_COUNT), dtype=np.uint16)
@@ -259,24 +400,110 @@ class ScanGeometry:
         az, el, dist = az[valid], el[valid], dist[valid]
         inten = np.clip(intensity[valid], 0, 65535).astype(np.uint16)
 
-        spot_f = ((el - self.v_min_deg)
-                  / (self.v_max_deg - self.v_min_deg) * (SPOT_COUNT - 1))
-        spot = np.clip(np.rint(spot_f), 0, SPOT_COUNT - 1).astype(np.intp)
-        # Within line li the horizontal angle of spot s is
-        # h_min + (li + s/(SPOT_COUNT-1)) * line_width, so invert that
-        # to find the line whose sweep passes closest to the point.
-        line_f = ((az - self.h_min_deg) / self.line_width_deg
-                  - spot / (SPOT_COUNT - 1))
-        line = np.clip(np.rint(line_f), 0, LINE_COUNT - 1).astype(np.intp)
+        spot, line, angle_error, delta_az, delta_el = self._nearest_beam(
+            az, el, rem_field, rem_interlace,
+            self.motor_offset_deg(motor_field, motor_interlace))
+        range_mm = np.clip(dist * 1000.0, 1, 65535)
 
-        range_mm = np.clip(dist * 1000.0, 1, 65535).astype(np.uint16)
+        # A beam reports the distance along *its own* direction. Taking
+        # the range of whichever point happens to be nearest and
+        # reporting it at the beam's angle bends flat surfaces: on a
+        # wall seen edge-on, a fraction of a degree of angular offset is
+        # tens of centimetres of range, which showed up as the surface
+        # rippling with distance. So interpolate the range of the points
+        # around the beam instead, weighted by how close each is to the
+        # beam axis.
+        # Only samples genuinely near a beam say anything about what
+        # that beam would measure. Without this gate a cell collects
+        # everything closer to it than to its neighbours - up to three
+        # degrees away in azimuth - and on a grazing surface those span
+        # metres of range, so the nearest-surface filter below kept only
+        # the near edge and every distant reading came out short by
+        # decimetres.
+        in_beam = angle_error <= BEAM_MATCH_GATE_DEG
+        if not np.any(in_beam):
+            return range_grid, intens_grid
+        spot, line = spot[in_beam], line[in_beam]
+        angle_error = angle_error[in_beam]
+        delta_az, delta_el = delta_az[in_beam], delta_el[in_beam]
+        range_mm, inten = range_mm[in_beam], inten[in_beam]
 
         cell = line * SPOT_COUNT + spot
         order = np.lexsort((range_mm, cell))
-        cell_sorted = cell[order]
-        first = np.ones(len(order), dtype=bool)
-        first[1:] = cell_sorted[1:] != cell_sorted[:-1]
-        sel = order[first]
+        cell_s = cell[order]
+        range_s = range_mm[order]
+        error_s = angle_error[order]
+        daz_s = delta_az[order]
+        del_s = delta_el[order]
+        intensity_s = inten[order]
+
+        # Group boundaries, and the nearest return in each cell.
+        first = np.ones(cell_s.size, dtype=bool)
+        first[1:] = cell_s[1:] != cell_s[:-1]
+        starts = np.flatnonzero(first)
+        counts = np.diff(np.append(starts, cell_s.size))
+        nearest = np.repeat(range_s[starts], counts)
+
+        # Interpolate only across points on the nearest surface: a
+        # farther surface behind it is occluded, not blended in.
+        same_surface = range_s <= nearest * 1.05 + 50.0
+        # Gaussian in the angular offset, about a fifth of the azimuth
+        # spot spacing wide. A gentler 1/error weighting let samples
+        # well off the beam axis pull the estimate, and since the two
+        # legs of the oscillation sit at different azimuth offsets they
+        # were pulled by different amounts - a wall then came out as two
+        # surfaces about 8 cm apart. Narrower than this starts dropping
+        # returns where the input cloud is sparse.
+        weight = np.where(same_surface,
+                          np.exp(-(error_s / BEAM_MATCH_SIGMA_DEG) ** 2), 0.0)
+
+        # Weighted mean of the samples around the beam axis. A linear
+        # fit against the elevation offset was tried and came out worse:
+        # at grazing incidence range varies with roughly 1/sin of the
+        # angle, so extrapolating a straight line across the spot
+        # spacing overshoots.
+        size = LINE_COUNT * SPOT_COUNT
+
+        def acc(values):
+            return np.bincount(cell_s, weights=weight * values, minlength=size)
+
+        total = np.bincount(cell_s, weights=weight, minlength=size)
+        occupied = total > 0.0
+        inv = np.zeros(size)
+        inv[occupied] = 1.0 / total[occupied]
+
+        mean_r = acc(range_s) * inv
+        estimate = mean_r.copy()
+
+        # Step to the beam axis along the range gradient. Averaging
+        # alone leaves a bias wherever the samples sit to one side of
+        # the axis, and how far they sit depends on the spot's own
+        # offset - so the two legs of the oscillation were biased by
+        # different amounts and a wall split into two surfaces that
+        # drifted apart with distance.
+        mean_r2 = acc(range_s * range_s) * inv
+        spread = np.sqrt(np.clip(mean_r2 - mean_r * mean_r, 0.0, None))
+        correction = np.zeros(size)
+        for offsets in (daz_s, del_s):
+            mean_d = acc(offsets) * inv
+            var_d = acc(offsets * offsets) * inv - mean_d * mean_d
+            covariance = acc(range_s * offsets) * inv - mean_r * mean_d
+            usable = occupied & (var_d > 1e-6)
+            slope = np.zeros(size)
+            slope[usable] = covariance[usable] / var_d[usable]
+            correction -= slope * mean_d
+        # Never extrapolate further than the samples themselves vary:
+        # a lone sample, or samples all at one offset, would otherwise
+        # send the estimate anywhere.
+        limit = 3.0 * spread + 50.0
+        estimate = mean_r + np.clip(correction, -limit, limit)
+
+        flat_range = range_grid.reshape(-1)
+        flat_range[occupied] = np.clip(
+            estimate[occupied], 1, 65535).astype(np.uint16)
+        # Intensity comes from the nearest return rather than a blend.
+        intens_grid.reshape(-1)[cell_s[starts]] = intensity_s[starts]
+        return range_grid, intens_grid
 
         range_grid.reshape(-1)[cell[sel]] = range_mm[sel]
         intens_grid.reshape(-1)[cell[sel]] = inten[sel]

@@ -13,14 +13,17 @@ def generate_launch_description():
                               description='PointCloud2 topic from simulation'),
         DeclareLaunchArgument('tcp_port', default_value='10940',
                               description='VSSP TCP port'),
-        DeclareLaunchArgument('scan_rate_hz', default_value='10.0',
-                              description='Motor revolutions per second'),
+        DeclareLaunchArgument('scan_rate_hz', default_value='20.0',
+                              description='Frames per second (datasheet: 20 Hz)'),
         DeclareLaunchArgument('horizontal_fov_deg', default_value='210.0',
                               description='Horizontal field of view'),
-        DeclareLaunchArgument('vertical_fov_min_deg', default_value='-20.0',
+        DeclareLaunchArgument('vertical_fov_min_deg', default_value='-5.0',
                               description='Lower vertical scan angle'),
-        DeclareLaunchArgument('vertical_fov_max_deg', default_value='20.0',
+        DeclareLaunchArgument('vertical_fov_max_deg', default_value='35.0',
                               description='Upper vertical scan angle'),
+        DeclareLaunchArgument('measured_lines', default_value='35',
+                              description='Lines carrying measurements per '
+                                          'frame (35 x 74 = 2590 points)'),
         DeclareLaunchArgument('range_noise_sigma_m', default_value='0.0',
                               description='Range noise std-dev in m (0 = off; '
                                           'leave off if the simulation already '
@@ -52,6 +55,8 @@ def generate_launch_description():
                 # Typed explicitly: "0" on the command line would
                 # otherwise be inferred as an integer and rejected by
                 # these double parameters.
+                'measured_lines': ParameterValue(
+                    LaunchConfiguration('measured_lines'), value_type=int),
                 'range_noise_sigma_m': ParameterValue(
                     LaunchConfiguration('range_noise_sigma_m'),
                     value_type=float),
